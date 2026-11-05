@@ -1,0 +1,4 @@
+.spell-error {
+    -fx-underline: true;
+    -fx-underline-color: red;
+}

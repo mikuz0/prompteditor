@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project version="4">
+  <component name="GigaCodeAgentSettings">
+    <option name="autoApprovedCommands">
+      <list>
+        <Execute>
+          <option name="pattern" value="cd *" />
+        </Execute>
+        <Execute>
+          <option name="pattern" value="./gradlew *" />
+        </Execute>
+        <Execute>
+          <option name="pattern" value="mkdir -p /home/mikuz/IdeaProjects/prompteditor/.github/workflows" />
+        </Execute>
+      </list>
+    </option>
+  </component>
+</project>
