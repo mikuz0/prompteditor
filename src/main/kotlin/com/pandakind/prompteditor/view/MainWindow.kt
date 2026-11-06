@@ -98,6 +98,7 @@ class MainWindow(
             items.addAll(
                 item("Создать...") { createProject() },
                 item("Открыть...") { openProject() },
+                item("Настройки проекта...") { openProjectSettings() },
                 SeparatorMenuItem(),
                 item("Закрыть проект") { closeProject() },
                 SeparatorMenuItem(),
@@ -134,7 +135,9 @@ class MainWindow(
             items.addAll(
                 item("Редактор разделов...") { openSectionEditor() },
                 SeparatorMenuItem(),
-                item("Проверить все разделы") { checkAllSpellcheck() }
+                item("Проверить все разделы") { checkAllSpellcheck() },
+                SeparatorMenuItem(),
+                item("Глобальные настройки...") { openGlobalSettings() }
             )
         }
 
@@ -151,8 +154,8 @@ class MainWindow(
         val hasProject = currentProject != null
         val hasPrompt = currentPromptName != null
 
-        // Project menu: only "Создать...", "Открыть...", "Выход" always enabled
-        val projectAlwaysEnabled = setOf("Создать...", "Открыть...", "Выход")
+        // Project menu: only "Создать...", "Открыть...", "Настройки проекта...", "Выход" always enabled
+        val projectAlwaysEnabled = setOf("Создать...", "Открыть...", "Настройки проекта...", "Выход")
         projectMenu.items.forEach { item ->
             if (item is MenuItem && item.text !in projectAlwaysEnabled) {
                 item.setDisable(!hasProject)
@@ -160,10 +163,11 @@ class MainWindow(
         }
 
         // Prompt menu: items needing project vs needing prompt
+        val promptNeedsPrompt = setOf("Сохранить")  // только "Сохранить" требует prompt
         val promptNeedsProject = setOf(
-            "Создать новый...", "Открыть...", "Экспорт в .txt...", "Импорт из .txt..."
+            "Создать новый...", "Открыть...", "Экспорт в .txt...", "Импорт из .txt...",
+            "Сохранить как..."  // доступен при любом проекте
         )
-        val promptNeedsPrompt = setOf("Сохранить", "Сохранить как...")
         promptMenu.items.forEach { item ->
             if (item is MenuItem) {
                 item.setDisable(when (item.text) {
@@ -222,7 +226,8 @@ class MainWindow(
     private fun createProject() {
         val chooser = DirectoryChooser().apply {
             title = "Создать проект (выберите папку)"
-            initialDirectory = java.nio.file.Paths.get(System.getProperty("user.home")).toFile()
+            initialDirectory = AppPaths.resolveWorkspacePath()?.toFile()
+                ?: java.nio.file.Paths.get(System.getProperty("user.home")).toFile()
         }
         val dir = chooser.showDialog(primaryStage)?.toPath() ?: return
 
@@ -243,11 +248,34 @@ class MainWindow(
         openProjectAt(dir, project)
     }
 
+    /** Open project settings dialog (currently only name). */
+    private fun openProjectSettings() {
+        if (currentProject == null || projectDir == null) return
+
+        val dialog = TextInputDialog(currentProject!!.name).apply {
+            title = "Настройки проекта"
+            headerText = "Имя проекта"
+            contentText = "Отображаемое имя:"
+        }
+        dialog.showAndWait().ifPresent { raw ->
+            val name = raw.trim()
+            if (name.isBlank()) {
+                Alert(Alert.AlertType.ERROR, "Имя проекта не может быть пустым").show()
+                return@ifPresent
+            }
+            projectController.rename(currentProject!!, name, projectDir!!)
+            currentProject = currentProject!!.copy(name = name)
+            projectLabel.text = "Проект: $name"
+            updateWindowTitle()
+        }
+    }
+
     /** Open an existing project by selecting a directory. */
     private fun openProject() {
         val chooser = DirectoryChooser().apply {
             title = "Открыть проект"
-            initialDirectory = java.nio.file.Paths.get(System.getProperty("user.home")).toFile()
+            initialDirectory = AppPaths.resolveWorkspacePath()?.toFile()
+                ?: java.nio.file.Paths.get(System.getProperty("user.home")).toFile()
         }
         val dir = chooser.showDialog(primaryStage)?.toPath() ?: return
 
@@ -448,7 +476,7 @@ class MainWindow(
 
     /** Save prompt as a new name. */
     private fun savePromptAs() {
-        val dialog = TextInputDialog(currentPromptName).apply {
+        val dialog = TextInputDialog(currentPromptName ?: "").apply {
             title = "Сохранить как"
             headerText = "Введите имя нового промта"
             contentText = "Имя промта:"
@@ -463,6 +491,7 @@ class MainWindow(
             currentPromptName = name
             saveCurrentPrompt()
             updateWindowTitle()
+            updateMenuDisables()
         }
     }
 
@@ -818,6 +847,49 @@ class MainWindow(
             } catch (_: Exception) {
                 // Ignore — user will open manually
             }
+        }
+    }
+
+    /** Open global settings dialog (workspace directory). */
+    private fun openGlobalSettings() {
+        val currentPath = AppPaths.resolveWorkspacePath()?.toString() ?: ""
+        val dialog = Dialog<Unit>().apply {
+            title = "Глобальные настройки"
+            headerText = "Настройки приложения"
+            dialogPane.buttonTypes.addAll(ButtonType.OK, ButtonType.CANCEL)
+        }
+        val pathField = TextField(currentPath).apply {
+            promptText = "Путь к рабочей папке проектов"
+            prefColumnCount = 40
+        }
+        val browseBtn = Button("Обзор...")
+        val pathBox = HBox(5.0, pathField, browseBtn)
+        dialog.dialogPane.content = VBox(8.0, pathBox).apply { padding = Insets(10.0) }
+
+        browseBtn.setOnAction {
+            val chooser = DirectoryChooser().apply {
+                title = "Выберите рабочую папку проектов"
+                initialDirectory = java.nio.file.Paths.get(System.getProperty("user.home")).toFile()
+            }
+            chooser.showDialog(primaryStage)?.let {
+                pathField.text = it.path
+            }
+        }
+
+        dialog.setResultConverter { bt: ButtonType? ->
+            if (bt == ButtonType.OK) pathField.text.trim() else null
+        }
+
+        dialog.showAndWait().ifPresent {
+            @Suppress("UNCHECKED_CAST")
+            val path = (it as String).trim()
+            if (path.isNotEmpty()) {
+                AppPaths.setWorkspacePath(java.nio.file.Paths.get(path))
+            } else {
+                // Clear workspace path
+                try { Files.deleteIfExists(AppPaths.workspacePath) } catch (_: Exception) {}
+            }
+            Alert(Alert.AlertType.INFORMATION, "Настройки сохранены. Изменения вступят в силу при следующем создании/открытии проекта.").show()
         }
     }
 

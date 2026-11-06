@@ -23,8 +23,9 @@ class ProjectController {
     /**
      * Create a new project in the specified directory.
      * Creates: project.json, sections.json (copy from default), prompts/ (empty).
+     * @param projectName Optional human-readable name; defaults to directory name.
      */
-    fun create(projectDir: Path, defaultSections: List<Section>): Project {
+    fun create(projectDir: Path, defaultSections: List<Section>, projectName: String? = null): Project {
         Files.createDirectories(projectDir)
         Files.createDirectories(projectDir.resolve("prompts"))
 
@@ -37,10 +38,19 @@ class ProjectController {
                 .writeValue(sectionsFile.toFile(), defaultSections)
         }
 
-        val project = Project(name = projectDir.fileName.toString(), lastPrompt = null)
+        val name = projectName ?: projectDir.fileName.toString()
+        val project = Project(name = name, lastPrompt = null)
         save(project, projectDir)
 
         return project
+    }
+
+    /**
+     * Update project name and persist to project.json.
+     */
+    fun rename(project: Project, newName: String, projectDir: Path) {
+        val updated = project.copy(name = newName)
+        save(updated, projectDir)
     }
 
     /**
