@@ -1,15 +1,29 @@
 package com.pandakind.prompteditor
 
-import com.pandakind.prompteditor.controller.ProfileController
-import com.pandakind.prompteditor.controller.PromptController
+import com.pandakind.prompteditor.controller.ProjectController
+import com.pandakind.prompteditor.controller.PromptAssembler
+import com.pandakind.prompteditor.controller.PromptFileController
 import com.pandakind.prompteditor.controller.SpellCheckerService
-import com.pandakind.prompteditor.model.SectionManager
+import com.pandakind.prompteditor.controller.SystemTemplatesController
+import com.pandakind.prompteditor.model.*
 import com.pandakind.prompteditor.util.AppPaths
 import com.pandakind.prompteditor.view.MainWindow
+import com.pandakind.prompteditor.view.SectionEditorDialog
+import com.pandakind.prompteditor.view.TabEditorView
 import javafx.application.Application
+import javafx.collections.FXCollections
+import javafx.geometry.Insets
+import javafx.geometry.Orientation
+import javafx.geometry.Pos
+import javafx.scene.Scene
+import javafx.scene.control.*
+import javafx.scene.layout.HBox
+import javafx.scene.layout.Priority
+import javafx.scene.layout.VBox
+import javafx.stage.FileChooser
 import javafx.stage.Stage
 import java.nio.file.Files
-import java.nio.file.StandardCopyOption
+import java.util.LinkedHashMap
 
 class PromptEditorApp : Application() {
 
@@ -19,28 +33,30 @@ class PromptEditorApp : Application() {
     }
 
     override fun start(primaryStage: Stage) {
-        val sectionManager = SectionManager(AppPaths.sectionsConfigPath)
-        val profileController = ProfileController()
-        val promptController = PromptController()
+        val projectController = ProjectController()
+        val promptFileController = PromptFileController()
+        val systemTemplatesController = SystemTemplatesController()
+        val promptAssembler = PromptAssembler()
         val spellChecker = SpellCheckerService()
 
         MainWindow(
             primaryStage,
-            sectionManager,
-            profileController,
-            promptController,
+            projectController,
+            promptFileController,
+            systemTemplatesController,
+            promptAssembler,
             spellChecker
         ).show()
     }
 
     private fun bootstrapSectionsConfig() {
-        val target = AppPaths.sectionsConfigPath
+        val target = AppPaths.defaultSectionsPath
         if (Files.exists(target)) return
         val stream = javaClass.getResourceAsStream("/config/sections_config.json")
             ?: javaClass.getResourceAsStream("/sections_config.json")
             ?: return
         stream.use { input ->
-            Files.copy(input, target, StandardCopyOption.REPLACE_EXISTING)
+            Files.copy(input, target, java.nio.file.StandardCopyOption.REPLACE_EXISTING)
         }
     }
 }

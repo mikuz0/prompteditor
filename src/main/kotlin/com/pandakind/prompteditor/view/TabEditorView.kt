@@ -1,7 +1,7 @@
 package com.pandakind.prompteditor.view
 
 import com.pandakind.prompteditor.controller.SpellCheckerService
-import com.pandakind.prompteditor.model.Section
+import com.pandakind.prompteditor.model.DisplaySection
 import javafx.beans.value.ObservableValue
 import javafx.geometry.Insets
 import javafx.geometry.Orientation
@@ -10,7 +10,7 @@ import javafx.scene.layout.Priority
 import javafx.scene.layout.VBox
 
 class TabEditorView(
-    private val section: Section,
+    private val section: DisplaySection,
     spellChecker: SpellCheckerService,
     initialText: String
 ) : VBox() {

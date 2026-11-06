@@ -1,6 +1,8 @@
 package com.pandakind.prompteditor.controller
 
-import com.pandakind.prompteditor.model.Profile
+import com.pandakind.prompteditor.model.DisplaySection
+import com.pandakind.prompteditor.model.Project
+import com.pandakind.prompteditor.model.Prompt
 import com.pandakind.prompteditor.model.Section
 import org.junit.jupiter.api.Test
 import java.nio.file.Files
@@ -9,53 +11,50 @@ import org.junit.jupiter.api.io.TempDir
 import kotlin.test.assertEquals
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
+import java.util.LinkedHashMap
 
 class ImportExportTest {
 
     @TempDir
     lateinit var tempDir: Path
 
-    private val profileController = ProfileController()
-    private val promptController = PromptController()
+    private val projectController = ProjectController()
+    private val promptFileController = PromptFileController()
+    private val promptAssembler = PromptAssembler()
 
     @Test
-    fun `should export and import json round-trip`() {
-        val profile = Profile(
+    fun `should save and load project json round-trip`() {
+        val templates = LinkedHashMap<String, List<String>>().apply {
+            put("greeting", listOf("Hello", "Hi"))
+        }
+        val project = Project(
             name = "test_export",
-            profileData = mapOf(
-                "role" to "You are an assistant",
-                "goal" to "Help the user",
-                "format" to "Use bullet points"
-            ),
-            templatesData = mapOf(
-                "role" to listOf("You are a helper", "Act as an expert")
-            )
+            lastPrompt = "prompt1",
+            templates = templates
         )
 
-        // Export to JSON
-        val json = profileController.exportToJson(profile)
+        projectController.save(project, tempDir)
+        val loaded = projectController.open(tempDir)
 
-        // Import from JSON
-        val imported = profileController.importFromJson(json)
-
-        assertEquals(profile.name, imported.name)
-        assertEquals(profile.profileData, imported.profileData)
-        assertEquals(profile.templatesData, imported.templatesData)
+        assertEquals("test_export", loaded?.name)
+        assertEquals("prompt1", loaded?.lastPrompt)
+        assertEquals(templates["greeting"], loaded?.templates?.get("greeting"))
     }
 
     @Test
-    fun `should save and load json file round-trip`() {
-        val profile = Profile(
-            name = "file_test",
-            profileData = mapOf("role" to "Test role", "goal" to "Test goal")
-        )
+    fun `should save and load prompt json file round-trip`() {
+        val data = LinkedHashMap<String, String>().apply {
+            put("role", "Test role")
+            put("goal", "Test goal")
+        }
+        val prompt = Prompt(name = "file_test", data = data)
 
-        val jsonFile = tempDir.resolve("test_profile.json")
-        Files.writeString(jsonFile, profileController.exportToJson(profile))
+        val jsonFile = tempDir.resolve("file_test.json")
+        Files.writeString(jsonFile, promptFileController.saveAsString(prompt))
 
-        val loaded = profileController.importFromJson(Files.readString(jsonFile))
-        assertEquals(profile.name, loaded.name)
-        assertEquals(profile.profileData, loaded.profileData)
+        val loaded = promptFileController.loadFromJson(Files.readString(jsonFile))
+        assertEquals("file_test", loaded.name)
+        assertEquals(data, loaded.data)
     }
 
     @Test
@@ -71,7 +70,7 @@ class ImportExportTest {
             "goal" to "Создать качественный ответ."
         )
 
-        val txtContent = promptController.assemblePrompt(sections, texts)
+        val txtContent = assembleForTest(sections, texts)
         val parsed = parseTxtPrompt(txtContent, sections)
 
         assertEquals("Ты — опытный специалист.", parsed["role"]?.trim())
@@ -88,7 +87,7 @@ class ImportExportTest {
             "role" to "Ты — эксперт.\nДругой текст."
         )
 
-        val txtContent = promptController.assemblePrompt(sections, texts)
+        val txtContent = assembleForTest(sections, texts)
         val parsed = parseTxtPrompt(txtContent, sections)
         assertEquals("Ты — эксперт.\nДругой текст.", parsed["role"]?.trim())
     }
@@ -104,7 +103,7 @@ class ImportExportTest {
             "goal" to "" // empty
         )
 
-        val txtContent = promptController.assemblePrompt(sections, texts)
+        val txtContent = assembleForTest(sections, texts)
         val parsed = parseTxtPrompt(txtContent, sections)
 
         // Empty sections are skipped by assemblePrompt
@@ -121,7 +120,7 @@ class ImportExportTest {
             "role" to "Текст роли."
         )
 
-        val txtContent = promptController.assemblePrompt(sections, texts)
+        val txtContent = assembleForTest(sections, texts)
         val parsed = parseTxtPrompt(txtContent, sections)
 
         assertEquals("Текст роли.", parsed["role"]?.trim())
@@ -139,7 +138,7 @@ class ImportExportTest {
             "goal" to "Текст цели."
         )
 
-        val result = promptController.assemblePrompt(sections, texts)
+        val result = assembleForTest(sections, texts)
 
         assertTrue(result.contains("РОЛЬ"))
         assertTrue(result.contains("ЦЕЛЬ"))
@@ -159,7 +158,7 @@ class ImportExportTest {
             "goal" to "Текст цели."
         )
 
-        val txtContent = promptController.assemblePrompt(sections, texts)
+        val txtContent = assembleForTest(sections, texts)
         val txtFile = tempDir.resolve("prompt.txt")
         Files.writeString(txtFile, txtContent)
 
@@ -171,7 +170,15 @@ class ImportExportTest {
     }
 
     /**
-     * Parses TXT content produced by PromptController.assemblePrompt.
+     * Assemble prompt for tests using DisplaySection (matches MainWindow behavior).
+     */
+    private fun assembleForTest(sections: List<Section>, texts: Map<String, String>): String {
+        val displaySections = sections.map { DisplaySection.fromSection(it) }
+        return promptAssembler.assemblePrompt(displaySections, texts)
+    }
+
+    /**
+     * Parses TXT content produced by assemblePrompt.
      * Format: {TITLE}\n{50 dashes}\n{TEXT}\n\n{next section...}
      */
     private fun parseTxtPrompt(content: String, sections: List<Section>): Map<String, String> {

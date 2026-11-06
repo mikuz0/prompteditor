@@ -1,25 +1,26 @@
 package com.pandakind.prompteditor.controller
 
-import com.pandakind.prompteditor.model.Section
+import com.pandakind.prompteditor.model.DisplaySection
 import org.junit.jupiter.api.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 import org.junit.jupiter.api.Assertions
 
-class PromptControllerTest {
+class PromptAssemblerTest {
 
-    private val controller = PromptController()
+    private val controller = PromptAssembler()
 
-    private fun createSection(key: String, title: String, order: Int, enabled: Boolean = true): Section {
-        return Section(
+    private fun createSection(key: String, title: String, order: Int, enabled: Boolean = true, isImplicit: Boolean = false): DisplaySection {
+        return DisplaySection(
             key = key,
             title = title,
             icon = key.uppercase(),
             description = "$key description",
             defaultText = "",
             order = order,
-            enabled = enabled
+            enabled = enabled,
+            isImplicit = isImplicit
         )
     }
 
@@ -181,5 +182,41 @@ class PromptControllerTest {
         assertTrue(result.contains("ONLY"))
         assertTrue(result.contains("-".repeat(50)))
         assertTrue(result.contains("Single section text"))
+    }
+
+    @Test
+    fun `should include implicit sections with key uppercase as header`() {
+        val sections = listOf(
+            createSection("role", "Role", 0),
+            createSection("extra", "Extra", 1001, isImplicit = true)
+        )
+        val texts = mapOf(
+            "role" to "Role text",
+            "extra" to "Extra text"
+        )
+
+        val result = controller.assemblePrompt(sections, texts)
+
+        assertTrue(result.contains("ROLE"))
+        assertTrue(result.contains("EXTRA"))
+        assertTrue(result.contains("Role text"))
+        assertTrue(result.contains("Extra text"))
+    }
+
+    @Test
+    fun `should skip empty implicit sections`() {
+        val sections = listOf(
+            createSection("role", "Role", 0),
+            createSection("extra", "Extra", 1001, isImplicit = true)
+        )
+        val texts = mapOf(
+            "role" to "Role text",
+            "extra" to ""
+        )
+
+        val result = controller.assemblePrompt(sections, texts)
+
+        assertTrue(result.contains("ROLE"))
+        assertFalse(result.contains("EXTRA"))
     }
 }

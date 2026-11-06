@@ -1,10 +1,12 @@
 package com.pandakind.prompteditor.view
 
-import com.pandakind.prompteditor.controller.ProfileController
-import com.pandakind.prompteditor.controller.PromptController
+import com.pandakind.prompteditor.controller.ProjectController
+import com.pandakind.prompteditor.controller.PromptAssembler
+import com.pandakind.prompteditor.controller.PromptFileController
 import com.pandakind.prompteditor.controller.SpellCheckerService
-import com.pandakind.prompteditor.model.Profile
-import com.pandakind.prompteditor.model.Section
+import com.pandakind.prompteditor.controller.SystemTemplatesController
+import com.pandakind.prompteditor.model.*
+import com.pandakind.prompteditor.util.AppPaths
 import com.pandakind.prompteditor.model.SectionManager
 import javafx.collections.FXCollections
 import javafx.geometry.Insets
@@ -15,34 +17,49 @@ import javafx.scene.control.*
 import javafx.scene.layout.HBox
 import javafx.scene.layout.Priority
 import javafx.scene.layout.VBox
+import javafx.stage.DirectoryChooser
 import javafx.stage.FileChooser
 import javafx.stage.Stage
 import java.nio.file.Files
+import java.util.LinkedHashMap
 
 class MainWindow(
     private val primaryStage: Stage,
-    private val sectionManager: SectionManager,
-    private val profileController: ProfileController,
-    private val promptController: PromptController,
+    private val projectController: ProjectController,
+    private val promptFileController: PromptFileController,
+    private val systemTemplatesController: SystemTemplatesController,
+    private val promptAssembler: PromptAssembler,
     private val spellChecker: SpellCheckerService
 ) {
+    // Project state
+    private var currentProject: Project? = null
+    private var currentPromptName: String? = null
+    private var projectDir: java.nio.file.Path? = null
+    private var isDirty: Boolean = false
+    private var sectionManager: SectionManager? = null
 
-    private val profileLabel = Label("Профиль: (не загружен)")
-    private val tabPane = TabPane()
-    private val assemblyViewer = TextArea().apply { isEditable = false; isWrapText = true }
+    // Per-project data
     private val tabEditors = mutableMapOf<String, TabEditorView>()
     private val sectionTexts = mutableMapOf<String, String>()
+    private val templatesData = mutableMapOf<String, List<String>>()
+
+    // UI components
+    private val projectLabel = Label("Проект не открыт")
+    private val tabPane = TabPane()
+    private val assemblyViewer = TextArea().apply { isEditable = false; isWrapText = true }
 
     init {
         primaryStage.title = "Prompt Editor v2.2"
         primaryStage.scene = buildScene()
-        refreshSections()
-        loadLastProfile()
+        // Auto-open last project if available
+        tryAutoOpenLastProject()
     }
 
     fun show() {
         primaryStage.show()
     }
+
+    // ─── Scene Building ──────────────────────────────────────────────
 
     private fun buildScene(): Scene {
         val topPanel = HBox(10.0).apply {
@@ -50,9 +67,8 @@ class MainWindow(
             padding = Insets(10.0)
             style = "-fx-background-color: #f0f0f0;"
             children.addAll(
-                profileLabel.apply { style = "-fx-font-size: 14px; -fx-font-weight: bold;" },
-                Button("Проверить орфографию").apply { setOnAction { checkAllSpellcheck() } },
-                Button("Сбросить всё").apply { setOnAction { confirmReset() } }
+                projectLabel.apply { style = "-fx-font-size: 14px; -fx-font-weight: bold;" },
+                Button("Проверить орфографию").apply { setOnAction { checkAllSpellcheck() } }
             )
         }
 
@@ -77,22 +93,44 @@ class MainWindow(
     }
 
     private fun buildMenuBar(): MenuBar {
-        val fileMenu = Menu("Файл").apply {
+        // Project menu
+        projectMenu = Menu("Проект").apply {
             items.addAll(
-                item("Сохранить") { saveCurrentProfile() },
-                item("Сохранить как...") { saveProfileAs() },
-                item("Загрузить...") { loadProfileDialog() },
+                item("Создать...") { createProject() },
+                item("Открыть...") { openProject() },
                 SeparatorMenuItem(),
-                item("Экспорт JSON...") { exportJson() },
-                item("Импорт JSON...") { importJson() },
-                item("Экспорт TXT...") { exportTxt() },
-                item("Импорт TXT...") { importTxt() },
+                item("Закрыть проект") { closeProject() },
                 SeparatorMenuItem(),
                 item("Выход") { primaryStage.close() }
             )
         }
 
-        val settingsMenu = Menu("Настройки").apply {
+        // Prompt menu
+        promptMenu = Menu("Промт").apply {
+            items.addAll(
+                item("Создать новый...") { createNewPrompt() },
+                item("Открыть...") { openPrompt() },
+                SeparatorMenuItem(),
+                item("Сохранить") { savePrompt() },
+                item("Сохранить как...") { savePromptAs() },
+                SeparatorMenuItem(),
+                item("Экспорт в .txt...") { exportTxt() },
+                item("Импорт из .txt...") { importTxt() }
+            )
+        }
+
+        // Template menu
+        templateMenu = Menu("Шаблон").apply {
+            items.addAll(
+                item("Открыть системный...") { openSystemTemplates() },
+                SeparatorMenuItem(),
+                item("Сохранить") { saveTemplates() },
+                item("Сохранить как системный") { saveAsSystemTemplates() }
+            )
+        }
+
+        // Settings menu
+        settingsMenu = Menu("Настройки").apply {
             items.addAll(
                 item("Редактор разделов...") { openSectionEditor() },
                 SeparatorMenuItem(),
@@ -100,12 +138,59 @@ class MainWindow(
             )
         }
 
+        // Help menu
         val helpMenu = Menu("Справка").apply {
             items.add(item("О программе") { showAbout() })
         }
 
-        return MenuBar(fileMenu, settingsMenu, helpMenu)
+        return MenuBar(projectMenu, promptMenu, templateMenu, settingsMenu, helpMenu)
     }
+
+    /** Update disable state for menu items that require a project. */
+    private fun updateMenuDisables() {
+        val hasProject = currentProject != null
+        val hasPrompt = currentPromptName != null
+
+        // Project menu: only "Создать...", "Открыть...", "Выход" always enabled
+        val projectAlwaysEnabled = setOf("Создать...", "Открыть...", "Выход")
+        projectMenu.items.forEach { item ->
+            if (item is MenuItem && item.text !in projectAlwaysEnabled) {
+                item.setDisable(!hasProject)
+            }
+        }
+
+        // Prompt menu: items needing project vs needing prompt
+        val promptNeedsProject = setOf(
+            "Создать новый...", "Открыть...", "Экспорт в .txt...", "Импорт из .txt..."
+        )
+        val promptNeedsPrompt = setOf("Сохранить", "Сохранить как...")
+        promptMenu.items.forEach { item ->
+            if (item is MenuItem) {
+                item.setDisable(when (item.text) {
+                    in promptNeedsProject -> !hasProject
+                    in promptNeedsPrompt -> !hasPrompt
+                    else -> false
+                })
+            }
+        }
+
+        // Template menu: always needs project
+        templateMenu.items.forEach { item ->
+            if (item is MenuItem) item.setDisable(!hasProject)
+        }
+
+        // Settings menu: "Проверить все разделы" always enabled
+        settingsMenu.items.forEach { item ->
+            if (item is MenuItem && item.text != "Проверить все разделы") {
+                item.setDisable(!hasProject)
+            }
+        }
+    }
+
+    private lateinit var projectMenu: Menu
+    private lateinit var promptMenu: Menu
+    private lateinit var templateMenu: Menu
+    private lateinit var settingsMenu: Menu
 
     private fun item(text: String, action: () -> Unit): MenuItem =
         MenuItem(text).apply { setOnAction { action() } }
@@ -131,79 +216,309 @@ class MainWindow(
         }
     }
 
-    /** Перестроить вкладки по текущему SectionManager, сохранив уже введённые тексты. */
-    private fun refreshSections() {
-        // сохранить текущие тексты
-        tabEditors.forEach { (key, editor) -> sectionTexts[key] = editor.text }
+    // ─── Menu Actions ────────────────────────────────────────────────
 
-        tabPane.tabs.clear()
+    /** Create a new project by selecting a directory. */
+    private fun createProject() {
+        val chooser = DirectoryChooser().apply {
+            title = "Создать проект (выберите папку)"
+            initialDirectory = java.nio.file.Paths.get(System.getProperty("user.home")).toFile()
+        }
+        val dir = chooser.showDialog(primaryStage)?.toPath() ?: return
+
+        val projectFile = dir.resolve("project.json")
+        if (Files.exists(projectFile)) {
+            val choice = Alert(Alert.AlertType.CONFIRMATION).apply {
+                title = "Проект существует"
+                headerText = null
+                contentText = "Проект уже существует в этой папке. Открыть его?"
+                buttonTypes.setAll(ButtonType.YES, ButtonType.NO)
+            }.showAndWait().orElse(ButtonType.NO)
+            if (choice == ButtonType.YES) openProjectAt(dir)
+            return
+        }
+
+        val defaultSections = loadDefaultSections()
+        val project = projectController.create(dir, defaultSections)
+        openProjectAt(dir, project)
+    }
+
+    /** Open an existing project by selecting a directory. */
+    private fun openProject() {
+        val chooser = DirectoryChooser().apply {
+            title = "Открыть проект"
+            initialDirectory = java.nio.file.Paths.get(System.getProperty("user.home")).toFile()
+        }
+        val dir = chooser.showDialog(primaryStage)?.toPath() ?: return
+
+        if (Files.exists(dir.resolve("project.json"))) {
+            openProjectAt(dir)
+        } else {
+            val choice = Alert(Alert.AlertType.CONFIRMATION).apply {
+                title = "Проект не найден"
+                headerText = null
+                contentText = "В этой папке нет project.json. Создать новый проект?"
+                buttonTypes.setAll(ButtonType.YES, ButtonType.NO)
+            }.showAndWait().orElse(ButtonType.NO)
+            if (choice == ButtonType.YES) {
+                val defaultSections = loadDefaultSections()
+                val project = projectController.create(dir, defaultSections)
+                openProjectAt(dir, project)
+            }
+        }
+    }
+
+    /** Open a project at the given directory path. */
+    private fun openProjectAt(dir: java.nio.file.Path, project: Project? = null) {
+        // Validate first — don't reset UI until we know the project opens
+        val actualProject = project ?: projectController.open(dir)
+        if (actualProject == null) {
+            Alert(Alert.AlertType.ERROR, "Не удалось открыть проект из $dir").show()
+            return
+        }
+
+        // Now ask to save old project if dirty
+        if (currentProject != null && isDirty) {
+            val choice = Alert(Alert.AlertType.CONFIRMATION).apply {
+                title = "Сохранить изменения?"
+                headerText = "Есть несохранённые изменения"
+                contentText = "Сохранить перед открытием другого проекта?"
+                buttonTypes.setAll(ButtonType.YES, ButtonType.NO, ButtonType.CANCEL)
+            }.showAndWait().orElse(ButtonType.CANCEL)
+            when (choice) {
+                ButtonType.YES -> saveCurrentPrompt()
+                ButtonType.CANCEL -> return
+                else -> { /* NO — discard unsaved */ }
+            }
+        }
+
+        // Safe to reset now
+        resetUI()
+
+        currentProject = actualProject
+        projectDir = dir
+        currentPromptName = null
+        isDirty = false
+        updateMenuDisables()
+
+        // Load sections.json
+        val sectionsFile = dir.resolve("sections.json")
+        if (!Files.exists(sectionsFile)) {
+            val choice = Alert(Alert.AlertType.CONFIRMATION).apply {
+                title = "Конфиг не найден"
+                headerText = "Конфиг разделов не найден"
+                contentText = "Восстановить из стандартного?"
+                buttonTypes.setAll(ButtonType.OK, ButtonType.CANCEL)
+            }.showAndWait().orElse(ButtonType.CANCEL)
+            if (choice == ButtonType.OK) {
+                val defaultSections = loadDefaultSections()
+                val objectMapper = com.fasterxml.jackson.databind.ObjectMapper().apply {
+                    registerModule(com.fasterxml.jackson.module.kotlin.kotlinModule())
+                }
+                objectMapper.writerWithDefaultPrettyPrinter()
+                    .writeValue(sectionsFile.toFile(), defaultSections)
+            } else {
+                Files.writeString(sectionsFile, "[]")
+            }
+        }
+        sectionManager = SectionManager(sectionsFile)
+
+        // Load templates from project
+        templatesData.clear()
+        actualProject.templates.forEach { (k, v) -> templatesData[k] = v }
+
+        // Update UI
+        projectLabel.text = "Проект: ${actualProject.name}"
+        primaryStage.title = actualProject.name
+
+        // Build tabs from sections
+        refreshSections()
+
+        // Load last prompt if specified
+        actualProject.lastPrompt?.let { lastPrompt ->
+            val loaded = promptFileController.load(dir, lastPrompt)
+            if (loaded != null) {
+                currentPromptName = lastPrompt
+                applyPromptData(loaded.data)
+                isDirty = false
+            }
+        }
+
+        // Save last project path
+        projectController.setLastProjectPath(dir)
+    }
+
+    /** Close the current project. */
+    private fun closeProject() {
+        if (currentProject == null) return
+
+        if (isDirty) {
+            val alert = Alert(Alert.AlertType.CONFIRMATION).apply {
+                title = "Сохранить изменения?"
+                headerText = "Есть несохранённые изменения"
+                contentText = "Сохранить изменения перед закрытием?"
+            }
+            alert.showAndWait().let { result ->
+                when (result.orElse(ButtonType.CANCEL)) {
+                    ButtonType.OK -> saveCurrentPrompt()
+                    ButtonType.CANCEL -> return
+                    else -> {}
+                }
+            }
+        }
+
+        resetUI()
+        projectLabel.text = "Проект не открыт"
+        primaryStage.title = "Prompt Editor v2.2"
+        updateMenuDisables()
+    }
+
+    /** Reset all UI state to empty. */
+    private fun resetUI() {
         tabEditors.clear()
+        sectionTexts.clear()
+        templatesData.clear()
+        tabPane.tabs.clear()
+        assemblyViewer.clear()
+        currentProject = null
+        currentPromptName = null
+        projectDir = null
+        isDirty = false
+        sectionManager = null
+    }
 
-        for (section in sectionManager.getEnabledSections()) {
-            val editor = TabEditorView(section, spellChecker, sectionTexts[section.key] ?: section.defaultText)
-            tabEditors[section.key] = editor
-            if (sectionTexts[section.key] == null) {
-                sectionTexts[section.key] = section.defaultText
+    /** Create a new prompt in the current project. */
+    private fun createNewPrompt() {
+        val dialog = TextInputDialog().apply {
+            title = "Создать новый промт"
+            headerText = "Введите имя нового промта"
+            contentText = "Имя промта:"
+        }
+        dialog.showAndWait().ifPresent { raw ->
+            val name = raw.trim()
+            if (name.isBlank()) return@ifPresent
+            // Validate name: no forbidden chars
+            if (!name.matches(Regex("^[a-zA-Z0-9_\\-]+$"))) {
+                Alert(Alert.AlertType.ERROR, "Имя промта не должно содержать / \\ : * ? \" < > |").show()
+                return@ifPresent
             }
-            editor.textProperty.addListener { _, _, newVal -> sectionTexts[section.key] = newVal ?: "" }
-
-            val tab = Tab(section.title, editor).apply {
-                isClosable = false
-                tooltip = Tooltip(section.description.ifBlank { section.title })
-            }
-            tabPane.tabs.add(tab)
+            // Get all section keys (from sections + templates)
+            val allKeys = getAllSectionKeys()
+            val prompt = promptFileController.create(projectDir!!, name, allKeys.toList())
+            currentPromptName = name
+            isDirty = false
+            applyPromptData(prompt.data)
+            updateWindowTitle()
+            updateMenuDisables()
         }
     }
 
-    private fun loadLastProfile() {
-        val name = profileController.loadLastProfile()
-        if (name == null) {
-            profileLabel.text = "Профиль: (не загружен)"
+    /** Open an existing prompt from the current project. */
+    private fun openPrompt() {
+        val prompts = promptFileController.list(projectDir!!)
+        if (prompts.isEmpty()) {
+            Alert(Alert.AlertType.INFORMATION, "Нет сохранённых промтов").show()
             return
         }
-        val profile = profileController.loadProfile(name)
-        if (profile == null) {
-            profileLabel.text = "Профиль: (не загружен)"
+        val dialog = ChoiceDialog(prompts.first(), prompts).apply {
+            title = "Открыть промт"
+            headerText = "Выберите промт"
+            contentText = "Промт:"
+        }
+        dialog.showAndWait().ifPresent { name ->
+            val prompt = promptFileController.load(projectDir!!, name)
+            if (prompt != null) {
+                currentPromptName = name
+                isDirty = false
+                applyPromptData(prompt.data)
+                updateWindowTitle()
+                updateMenuDisables()
+            }
+        }
+    }
+
+    /** Save the current prompt. */
+    private fun savePrompt() {
+        if (currentPromptName == null) {
+            savePromptAs()
             return
         }
-        applyProfile(profile)
-        profileLabel.text = "Профиль: ${profile.name}"
+        saveCurrentPrompt()
     }
 
-    private fun applyProfile(profile: Profile) {
-        for ((key, text) in profile.profileData) {
-            sectionTexts[key] = text
-            tabEditors[key]?.text = text
+    /** Save prompt as a new name. */
+    private fun savePromptAs() {
+        val dialog = TextInputDialog(currentPromptName).apply {
+            title = "Сохранить как"
+            headerText = "Введите имя нового промта"
+            contentText = "Имя промта:"
         }
-        for ((key, templates) in profile.templatesData) {
-            tabEditors[key]?.setTemplates(templates)
+        dialog.showAndWait().ifPresent { raw ->
+            val name = raw.trim()
+            if (name.isBlank()) return@ifPresent
+            if (!name.matches(Regex("^[a-zA-Z0-9_\\-]+$"))) {
+                Alert(Alert.AlertType.ERROR, "Имя промта не должно содержать / \\ : * ? \" < > |").show()
+                return@ifPresent
+            }
+            currentPromptName = name
+            saveCurrentPrompt()
+            updateWindowTitle()
         }
     }
 
-    /** Собрать текущее состояние UI в Profile-объект. */
-    private fun currentProfileSnapshot(name: String): Profile {
-        val data = tabEditors.mapValues { it.value.text }
-        val templates = tabEditors.mapValues { it.value.getTemplates() }
-        return Profile(name, data, templates)
-    }
+    /** Save current prompt data to file and update project.lastPrompt. */
+    private fun saveCurrentPrompt() {
+        if (currentPromptName == null || projectDir == null) return
 
-    private fun assemblePrompt() {
-        assemblyViewer.text = promptController.assemblePrompt(
-            sectionManager.getEnabledSections(),
-            tabEditors.mapValues { it.value.text }
+        // Collect all section keys and their text
+        val allKeys = getAllSectionKeys()
+        val data = LinkedHashMap<String, String>()
+        for (key in allKeys) {
+            data[key] = sectionTexts[key] ?: ""
+        }
+
+        val prompt = Prompt(name = currentPromptName!!, data = data)
+        promptFileController.save(projectDir!!, prompt)
+
+        // Update project.lastPrompt and templates
+        val project = currentProject!!
+        val updatedProject = project.copy(
+            lastPrompt = currentPromptName,
+            templates = LinkedHashMap(templatesData)
         )
+        projectController.save(updatedProject, projectDir!!)
+        currentProject = updatedProject
+
+        isDirty = false
+        updateWindowTitle()
     }
 
-    private fun copyToClipboard() {
-        val text = assemblyViewer.text
-        if (text.isBlank()) {
-            Alert(Alert.AlertType.WARNING, "Сначала соберите промт").show()
-            return
+    /** Export assembled prompt to a .txt file. */
+    private fun exportTxt() {
+        assemblePrompt()
+        saveToFile()
+    }
+
+    /** Import text from a .txt file into current sections. */
+    private fun importTxt() {
+        val chooser = FileChooser().apply {
+            title = "Импорт из .txt"
+            initialDirectory = java.nio.file.Paths.get(System.getProperty("user.home")).toFile()
         }
-        val content = javafx.scene.input.ClipboardContent().apply { putString(text) }
-        javafx.scene.input.Clipboard.getSystemClipboard().setContent(content)
+        chooser.showOpenDialog(primaryStage)?.let { file ->
+            val content = Files.readString(file.toPath())
+            val sections = sectionManager?.getAllSections() ?: emptyList()
+            val parsed = parseTxtPrompt(content, sections)
+            for ((key, text) in parsed) {
+                sectionTexts[key] = text
+                tabEditors[key]?.text = text
+            }
+            isDirty = true
+            updateWindowTitle()
+        }
     }
 
+    /** Save assembled prompt to a file. */
     private fun saveToFile() {
         if (assemblyViewer.text.isBlank()) assemblePrompt()
         if (assemblyViewer.text.isBlank()) {
@@ -219,97 +534,227 @@ class MainWindow(
         }
     }
 
-    private fun saveCurrentProfile() {
-        val name = profileController.loadLastProfile()
-        if (name == null) {
-            saveProfileAs()
+    /** Copy assembled prompt to clipboard. */
+    private fun copyToClipboard() {
+        val text = assemblyViewer.text
+        if (text.isBlank()) {
+            Alert(Alert.AlertType.WARNING, "Сначала соберите промт").show()
             return
         }
-        profileController.saveProfile(currentProfileSnapshot(name))
-        profileLabel.text = "Профиль: $name"
+        val content = javafx.scene.input.ClipboardContent().apply { putString(text) }
+        javafx.scene.input.Clipboard.getSystemClipboard().setContent(content)
     }
 
-    private fun saveProfileAs() {
-        val dialog = TextInputDialog().apply {
-            title = "Сохранить как"
-            headerText = "Введите имя профиля"
-            contentText = "Имя профиля:"
-        }
-        dialog.showAndWait().ifPresent { raw ->
-            val name = raw.trim()
-            if (name.isBlank()) return@ifPresent
-            profileController.saveProfile(currentProfileSnapshot(name))
-            profileLabel.text = "Профиль: $name"
-        }
-    }
+    // ─── Templates ───────────────────────────────────────────────────
 
-    private fun loadProfileDialog() {
-        val profiles = profileController.listProfiles()
-        if (profiles.isEmpty()) {
-            Alert(Alert.AlertType.INFORMATION, "Нет сохранённых профилей").show()
+    /** Load system templates and replace current project templates. */
+    private fun openSystemTemplates() {
+        val sysTemplates = systemTemplatesController.load()
+        if (sysTemplates == null || sysTemplates.isEmpty()) {
+            Alert(Alert.AlertType.INFORMATION, "Системные шаблоны пусты").show()
             return
         }
-        val dialog = ChoiceDialog(profiles.first(), profiles).apply {
-            title = "Загрузить профиль"
-            headerText = "Выберите профиль"
-            contentText = "Профиль:"
+        val confirm = if (templatesData.isNotEmpty()) {
+            val alert = Alert(Alert.AlertType.CONFIRMATION).apply {
+                title = "Заменить шаблоны?"
+                headerText = null
+                contentText = "Текущие шаблоны будут заменены системными."
+            }
+            alert.showAndWait().orElse(ButtonType.CANCEL) == ButtonType.OK
+        } else {
+            true
         }
-        dialog.showAndWait().ifPresent { name ->
-            profileController.loadProfile(name)?.let {
-                applyProfile(it)
-                profileLabel.text = "Профиль: $name"
+        if (!confirm) return
+        templatesData.clear()
+        templatesData.putAll(sysTemplates)
+        refreshTemplatesInTabs()
+        isDirty = true
+        updateWindowTitle()
+    }
+
+    /** Save current project templates to project.json. */
+    private fun saveTemplates() {
+        if (currentProject == null || projectDir == null) return
+        val updatedProject = currentProject!!.copy(templates = LinkedHashMap(templatesData))
+        projectController.save(updatedProject, projectDir!!)
+        currentProject = updatedProject
+        Alert(Alert.AlertType.INFORMATION, "Шаблоны сохранены").show()
+    }
+
+    /** Save current templates as system templates. */
+    private fun saveAsSystemTemplates() {
+        if (templatesData.isEmpty()) {
+            Alert(Alert.AlertType.WARNING, "Нет шаблонов для сохранения").show()
+            return
+        }
+        val alert = Alert(Alert.AlertType.CONFIRMATION).apply {
+            title = "Сохранить как системный"
+            headerText = null
+            contentText = "Системные шаблоны будут перезаписаны. Продолжить?"
+        }
+        alert.showAndWait().ifPresent { btn ->
+            if (btn == ButtonType.OK) {
+                systemTemplatesController.save(templatesData)
+                Alert(Alert.AlertType.INFORMATION, "Системные шаблоны сохранены").show()
             }
         }
     }
 
-    private fun exportJson() {
-        val chooser = FileChooser().apply {
-            extensionFilters.add(FileChooser.ExtensionFilter("JSON файлы", "*.json"))
-        }
-        val currentName = profileController.loadLastProfile() ?: "export"
-        chooser.showSaveDialog(primaryStage)?.let { file ->
-            val json = profileController.exportToJson(currentProfileSnapshot(currentName))
-            Files.writeString(file.toPath(), json)
-        }
-    }
+    // ─── Section Editor ──────────────────────────────────────────────
 
-    private fun importJson() {
-        val chooser = FileChooser().apply {
-            extensionFilters.add(FileChooser.ExtensionFilter("JSON файлы", "*.json"))
-        }
-        chooser.showOpenDialog(primaryStage)?.let { file ->
-            try {
-                val profile = profileController.importFromJson(Files.readString(file.toPath()))
-                applyProfile(profile)
-                profileLabel.text = "Профиль: ${profile.name}"
-            } catch (e: Exception) {
-                Alert(Alert.AlertType.ERROR, "Не удалось импортировать JSON:\n${e.message}").show()
+    private fun openSectionEditor() {
+        if (sectionManager == null) return
+        val dialog = SectionEditorDialog(primaryStage, sectionManager!!)
+        dialog.showAndWait()
+        if (dialog.hasChanges) {
+            // Save current texts before rebuilding
+            tabEditors.forEach { (key, editor) -> sectionTexts[key] = editor.text }
+            refreshSections()
+            // Restore texts after rebuild
+            sectionTexts.forEach { (key, text) ->
+                tabEditors[key]?.text = text
+            }
+            // Restore templates
+            templatesData.forEach { (key, list) ->
+                tabEditors[key]?.setTemplates(list)
             }
         }
     }
 
-    private fun exportTxt() {
-        assemblePrompt()
-        saveToFile()
+    // ─── Spell Checking ──────────────────────────────────────────────
+
+    private fun checkAllSpellcheck() {
+        tabEditors.values.forEach { it.forceRecheck() }
+        Alert(Alert.AlertType.INFORMATION, "Проверка всех разделов выполнена").show()
     }
 
-    private fun importTxt() {
-        val chooser = FileChooser().apply {
-            extensionFilters.add(FileChooser.ExtensionFilter("TXT файлы", "*.txt"))
+    // ─── Assemble ────────────────────────────────────────────────────
+
+    private fun assemblePrompt() {
+        val displaySections = buildDisplaySections()
+        val result = promptAssembler.assemblePrompt(displaySections, sectionTexts)
+        assemblyViewer.text = result
+    }
+
+    // ─── UI Helpers ──────────────────────────────────────────────────
+
+    /**
+     * Build display sections by combining:
+     * 1. Config sections (from sections.json) sorted by order
+     * 2. Implicit sections (from templates/prompts) not in config
+     */
+    private fun buildDisplaySections(): List<DisplaySection> {
+        val configSections = sectionManager?.getAllSections() ?: emptyList()
+        val configKeys = configSections.map { it.key }.toSet()
+
+        // All keys from config + templates + prompt data
+        val allKeys = configSections.map { it.key }.toMutableSet()
+        allKeys.addAll(templatesData.keys)
+        allKeys.addAll(sectionTexts.keys)
+
+        // Config sections first, sorted by order
+        val display = configSections.map { DisplaySection.fromSection(it) }.toMutableList()
+
+        // Implicit sections (not in config)
+        val implicitKeys = allKeys - configKeys
+        var idx = 0
+        for (key in implicitKeys) {
+            display.add(DisplaySection(
+                key = key,
+                title = key,
+                order = 1000 + idx,
+                enabled = true,
+                isImplicit = true
+            ))
+            idx++
         }
-        chooser.showOpenDialog(primaryStage)?.let { file ->
-            val parsed = parseTxtPrompt(
-                Files.readString(file.toPath()),
-                sectionManager.getEnabledSections()
+
+        return display
+    }
+
+    /** Get all section keys: from config + templates + prompt data. */
+    private fun getAllSectionKeys(): Set<String> {
+        val configKeys = sectionManager?.getAllSections()?.map { it.key }?.toSet() ?: emptySet()
+        val allKeys = configKeys.toMutableSet()
+        allKeys.addAll(templatesData.keys)
+        allKeys.addAll(sectionTexts.keys)
+        return allKeys
+    }
+
+    /** Refresh tab editors based on current sections, preserving existing data. */
+    private fun refreshSections() {
+        // Save current texts
+        tabEditors.forEach { (key, editor) -> sectionTexts[key] = editor.text }
+
+        tabPane.tabs.clear()
+        tabEditors.clear()
+
+        val displaySections = buildDisplaySections()
+
+        for (section in displaySections) {
+            val editor = TabEditorView(
+                section,
+                spellChecker,
+                sectionTexts[section.key] ?: section.defaultText
             )
-            for ((key, text) in parsed) {
+            tabEditors[section.key] = editor
+            if (sectionTexts[section.key] == null) {
+                sectionTexts[section.key] = section.defaultText
+            }
+            // Subscribe to text changes
+            editor.textProperty.addListener { _, _, newVal ->
+                sectionTexts[section.key] = newVal ?: ""
+                if (!isApplyingData) {
+                    isDirty = true
+                    updateWindowTitle()
+                }
+            }
+
+            val tab = Tab(section.title, editor).apply {
+                isClosable = false
+                tooltip = Tooltip(section.description.ifBlank { section.title })
+            }
+            tabPane.tabs.add(tab)
+        }
+    }
+
+    /** Track if we're programmatically setting text to avoid isDirty. */
+    private var isApplyingData = false
+
+    /** Apply prompt data to all tabs. */
+    private fun applyPromptData(data: Map<String, String>) {
+        isApplyingData = true
+        try {
+            for ((key, text) in data) {
                 sectionTexts[key] = text
                 tabEditors[key]?.text = text
             }
+            templatesData.forEach { (key, list) ->
+                tabEditors[key]?.setTemplates(list)
+            }
+        } finally {
+            isApplyingData = false
         }
     }
 
-    /** Парсит сборку обратно в разделы по заголовкам. */
+    /** Update templates in all tabs from current templatesData. */
+    private fun refreshTemplatesInTabs() {
+        templatesData.forEach { (key, list) ->
+            tabEditors[key]?.setTemplates(list)
+        }
+    }
+
+    /** Update window title with dirty indicator. */
+    private fun updateWindowTitle() {
+        val project = currentProject
+        val prompt = currentPromptName
+        val base = if (project != null) project.name else "Prompt Editor v2.2"
+        val suffix = prompt?.let { " — $it" } ?: ""
+        val prefix = if (isDirty) "* " else ""
+        primaryStage.title = "$prefix$base$suffix"
+    }
+
+    /** Parse TXT content (produced by assemblePrompt) back into sections. */
     private fun parseTxtPrompt(content: String, sections: List<Section>): Map<String, String> {
         val titleToKey = sections.associateBy({ it.title.uppercase() }, { it.key })
         val result = mutableMapOf<String, String>()
@@ -329,7 +774,7 @@ class MainWindow(
                 flush()
                 currentKey = byTitle
             } else if (isSeparator) {
-                // строка-разделитель под заголовком — игнор
+                // separator line after title — ignore
             } else {
                 buffer.append(line).append('\n')
             }
@@ -338,30 +783,40 @@ class MainWindow(
         return result
     }
 
-    private fun openSectionEditor() {
-        val dialog = SectionEditorDialog(primaryStage, sectionManager)
-        dialog.showAndWait()
-        if (dialog.hasChanges) {
-            refreshSections()
+    /** Load default sections from config or classpath. */
+    private fun loadDefaultSections(): List<Section> {
+        val path = AppPaths.defaultSectionsPath
+        if (Files.exists(path)) {
+            val objectMapper = com.fasterxml.jackson.databind.ObjectMapper().apply {
+                registerModule(com.fasterxml.jackson.module.kotlin.kotlinModule())
+            }
+            return objectMapper.readValue(
+                path.toFile(),
+                object : com.fasterxml.jackson.core.type.TypeReference<List<Section>>() {}
+            )
+        }
+        // Fallback: try classpath
+        val stream = javaClass.getResourceAsStream("/sections_config.json")
+            ?: javaClass.getResourceAsStream("/config/sections_config.json")
+            ?: return emptyList()
+        stream.use { input ->
+            val content = input.bufferedReader().readText()
+            Files.writeString(path, content)
+            val objectMapper = com.fasterxml.jackson.databind.ObjectMapper().apply {
+                registerModule(com.fasterxml.jackson.module.kotlin.kotlinModule())
+            }
+            return objectMapper.readValue(content, object : com.fasterxml.jackson.core.type.TypeReference<List<Section>>() {})
         }
     }
 
-    private fun checkAllSpellcheck() {
-        tabEditors.values.forEach { it.forceRecheck() }
-        Alert(Alert.AlertType.INFORMATION, "Проверка всех разделов выполнена").show()
-    }
-
-    private fun confirmReset() {
-        val alert = Alert(Alert.AlertType.CONFIRMATION).apply {
-            title = "Сброс всех данных"
-            headerText = "Внимание!"
-            contentText = "Очистить все вкладки и панель сборки?"
-        }
-        alert.showAndWait().ifPresent { r ->
-            if (r == ButtonType.OK) {
-                tabEditors.values.forEach { it.text = "" }
-                sectionTexts.clear()
-                assemblyViewer.clear()
+    /** Try to auto-open the last project on startup. */
+    private fun tryAutoOpenLastProject() {
+        val lastPath = projectController.getLastProjectPath()
+        if (lastPath != null && Files.exists(lastPath)) {
+            try {
+                openProjectAt(lastPath)
+            } catch (_: Exception) {
+                // Ignore — user will open manually
             }
         }
     }

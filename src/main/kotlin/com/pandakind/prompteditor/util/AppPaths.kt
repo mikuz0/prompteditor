@@ -14,25 +14,25 @@ object AppPaths {
         dir
     }
 
-    val profilesDir: Path by lazy {
-        val dir = configDir.resolve("profiles")
-        Files.createDirectories(dir)
-        dir
+    /** Default sections config template (not modified by the app). */
+    val defaultSectionsPath: Path by lazy {
+        configDir.resolve("sections_config.json")
+    }
+
+    /** System-level templates, overwritten via "Save as system template". */
+    val systemTemplatesPath: Path by lazy {
+        configDir.resolve("system_templates.json")
+    }
+
+    /** Path to the last opened project directory (absolute path string). */
+    val lastProjectPath: Path by lazy {
+        configDir.resolve("last_project.txt")
     }
 
     val userDictPath: Path by lazy {
         val dir = configDir.resolve("user_dict")
         Files.createDirectories(dir)
         dir.resolve("user_dictionary.txt")
-    }
-
-    val lastProfilePath: Path by lazy {
-        configDir.resolve("last_profile.txt")
-    }
-
-    /** Рабочая копия sections_config.json в пользовательской директории. */
-    val sectionsConfigPath: Path by lazy {
-        configDir.resolve("sections_config.json")
     }
 
     private fun resolveBaseDir(): Path {
@@ -57,8 +57,6 @@ object AppPaths {
 
     fun ensureDirectories() {
         Files.createDirectories(configDir)
-        Files.createDirectories(profilesDir)
         Files.createDirectories(userDictPath.parent)
-        Files.createDirectories(lastProfilePath.parent)
     }
 }
