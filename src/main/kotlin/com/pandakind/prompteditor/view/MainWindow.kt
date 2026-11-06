@@ -21,6 +21,7 @@ import javafx.stage.DirectoryChooser
 import javafx.stage.FileChooser
 import javafx.stage.Stage
 import java.nio.file.Files
+import java.nio.file.Paths
 import java.util.LinkedHashMap
 
 class MainWindow(
@@ -51,12 +52,11 @@ class MainWindow(
     init {
         primaryStage.title = "Prompt Editor v2.2"
         primaryStage.scene = buildScene()
-        // Auto-open last project if available
-        tryAutoOpenLastProject()
     }
 
     fun show() {
         primaryStage.show()
+        tryAutoOpenLastProject()
     }
 
     // ─── Scene Building ──────────────────────────────────────────────
@@ -154,8 +154,8 @@ class MainWindow(
         val hasProject = currentProject != null
         val hasPrompt = currentPromptName != null
 
-        // Project menu: only "Создать...", "Открыть...", "Настройки проекта...", "Выход" always enabled
-        val projectAlwaysEnabled = setOf("Создать...", "Открыть...", "Настройки проекта...", "Выход")
+        // Project menu: only "Создать...", "Открыть...", "Выход" always enabled
+        val projectAlwaysEnabled = setOf("Создать...", "Открыть...", "Выход")
         projectMenu.items.forEach { item ->
             if (item is MenuItem && item.text !in projectAlwaysEnabled) {
                 item.setDisable(!hasProject)
@@ -374,6 +374,8 @@ class MainWindow(
 
         // Save last project path
         projectController.setLastProjectPath(dir)
+        // Update workspace path for DirectoryChooser
+        AppPaths.setWorkspacePath(dir.parent ?: dir)
     }
 
     /** Close the current project. */
@@ -536,12 +538,10 @@ class MainWindow(
         }
         chooser.showOpenDialog(primaryStage)?.let { file ->
             val content = Files.readString(file.toPath())
-            val sections = sectionManager?.getAllSections() ?: emptyList()
-            val parsed = parseTxtPrompt(content, sections)
-            for ((key, text) in parsed) {
-                sectionTexts[key] = text
-                tabEditors[key]?.text = text
-            }
+            tabEditors.forEach { (key, editor) -> sectionTexts[key] = editor.text }
+            val parsed = parseTxtPrompt(content)
+            for ((key, text) in parsed) sectionTexts[key] = text
+            refreshSections()
             isDirty = true
             updateWindowTitle()
         }
@@ -647,6 +647,8 @@ class MainWindow(
             templatesData.forEach { (key, list) ->
                 tabEditors[key]?.setTemplates(list)
             }
+            isDirty = true
+            updateWindowTitle()
         }
     }
 
@@ -738,6 +740,9 @@ class MainWindow(
                     updateWindowTitle()
                 }
             }
+            editor.setOnTemplatesChanged {
+                if (!isApplyingData) { isDirty = true; updateWindowTitle() }
+            }
 
             val tab = Tab(section.title, editor).apply {
                 isClosable = false
@@ -784,8 +789,12 @@ class MainWindow(
     }
 
     /** Parse TXT content (produced by assemblePrompt) back into sections. */
-    private fun parseTxtPrompt(content: String, sections: List<Section>): Map<String, String> {
-        val titleToKey = sections.associateBy({ it.title.uppercase() }, { it.key })
+    private fun parseTxtPrompt(content: String): Map<String, String> {
+        val displaySections = buildDisplaySections()
+        val titleToKey = displaySections.associateBy(
+            { if (it.isImplicit) it.key.uppercase() else it.title.uppercase() },
+            { it.key }
+        )
         val result = mutableMapOf<String, String>()
         var currentKey: String? = null
         val buffer = StringBuilder()
@@ -853,7 +862,7 @@ class MainWindow(
     /** Open global settings dialog (workspace directory). */
     private fun openGlobalSettings() {
         val currentPath = AppPaths.resolveWorkspacePath()?.toString() ?: ""
-        val dialog = Dialog<Unit>().apply {
+        val dialog = Dialog<String>().apply {
             title = "Глобальные настройки"
             headerText = "Настройки приложения"
             dialogPane.buttonTypes.addAll(ButtonType.OK, ButtonType.CANCEL)
@@ -863,34 +872,31 @@ class MainWindow(
             prefColumnCount = 40
         }
         val browseBtn = Button("Обзор...")
-        val pathBox = HBox(5.0, pathField, browseBtn)
-        dialog.dialogPane.content = VBox(8.0, pathBox).apply { padding = Insets(10.0) }
-
+        dialog.dialogPane.content = VBox(8.0, HBox(5.0, pathField, browseBtn)).apply {
+            padding = Insets(10.0)
+        }
         browseBtn.setOnAction {
             val chooser = DirectoryChooser().apply {
                 title = "Выберите рабочую папку проектов"
-                initialDirectory = java.nio.file.Paths.get(System.getProperty("user.home")).toFile()
+                initialDirectory = Paths.get(System.getProperty("user.home")).toFile()
             }
-            chooser.showDialog(primaryStage)?.let {
-                pathField.text = it.path
-            }
+            chooser.showDialog(primaryStage)?.let { pathField.text = it.path }
         }
-
-        dialog.setResultConverter { bt: ButtonType? ->
+        dialog.setResultConverter { bt ->
             if (bt == ButtonType.OK) pathField.text.trim() else null
         }
-
-        dialog.showAndWait().ifPresent {
-            @Suppress("UNCHECKED_CAST")
-            val path = (it as String).trim()
-            if (path.isNotEmpty()) {
-                AppPaths.setWorkspacePath(java.nio.file.Paths.get(path))
-            } else {
-                // Clear workspace path
-                try { Files.deleteIfExists(AppPaths.workspacePath) } catch (_: Exception) {}
+        val result = dialog.showAndWait().orElse(null) ?: return
+        if (result.isEmpty()) {
+            try { Files.deleteIfExists(AppPaths.workspacePath) } catch (_: Exception) {}
+        } else {
+            try {
+                AppPaths.setWorkspacePath(Paths.get(result))
+            } catch (e: Exception) {
+                Alert(Alert.AlertType.ERROR, "Некорректный путь: ${e.message}").show()
+                return
             }
-            Alert(Alert.AlertType.INFORMATION, "Настройки сохранены. Изменения вступят в силу при следующем создании/открытии проекта.").show()
         }
+        Alert(Alert.AlertType.INFORMATION, "Настройки сохранены").show()
     }
 
     private fun showAbout() {

@@ -25,6 +25,9 @@
         <Execute>
           <option name="pattern" value="echo *" />
         </Execute>
+        <Execute>
+          <option name="pattern" value="timeout 5 ./gradlew *" />
+        </Execute>
       </list>
     </option>
   </component>

@@ -43,4 +43,5 @@ class TabEditorView(
     fun getTemplates(): List<String> = templatesPanel.getTemplates()
     fun setTemplates(list: List<String>) = templatesPanel.setTemplates(list)
     fun forceRecheck() = codeArea.forceRecheck()
+    fun setOnTemplatesChanged(cb: () -> Unit) = templatesPanel.setOnChanged(cb)
 }

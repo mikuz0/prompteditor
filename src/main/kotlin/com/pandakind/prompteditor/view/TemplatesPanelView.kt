@@ -12,6 +12,9 @@ class TemplatesPanelView(
     private val onInsertTemplate: (String) -> Unit
 ) : VBox(8.0) {
 
+    private var onChanged: (() -> Unit)? = null
+    fun setOnChanged(cb: () -> Unit) { onChanged = cb }
+
     private val templates: ObservableList<String> = FXCollections.observableArrayList()
     private val listView = ListView(templates).apply {
         minWidth = 180.0
@@ -27,11 +30,11 @@ class TemplatesPanelView(
     init {
         val addBtn = Button("Добавить").apply {
             maxWidth = Double.MAX_VALUE
-            setOnAction { showAddDialog()?.let { templates.add(it) } }
+            setOnAction { showAddDialog()?.let { templates.add(it); onChanged?.invoke() } }
         }
         val removeBtn = Button("Удалить").apply {
             maxWidth = Double.MAX_VALUE
-            setOnAction { listView.selectionModel.selectedItem?.let { templates.remove(it) } }
+            setOnAction { listView.selectionModel.selectedItem?.let { templates.remove(it); onChanged?.invoke() } }
         }
         VBox.setVgrow(listView, javafx.scene.layout.Priority.ALWAYS)
         children.addAll(Label("Стандартные формулировки").apply { style = "-fx-font-weight: bold;" },
