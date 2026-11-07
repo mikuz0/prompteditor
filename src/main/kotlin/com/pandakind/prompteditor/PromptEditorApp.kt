@@ -4,11 +4,10 @@ import com.pandakind.prompteditor.controller.ProjectController
 import com.pandakind.prompteditor.controller.PromptAssembler
 import com.pandakind.prompteditor.controller.PromptFileController
 import com.pandakind.prompteditor.controller.SpellCheckerService
-import com.pandakind.prompteditor.controller.SystemTemplatesController
+import com.pandakind.prompteditor.controller.SystemTemplateController
 import com.pandakind.prompteditor.model.*
 import com.pandakind.prompteditor.util.AppPaths
 import com.pandakind.prompteditor.view.MainWindow
-import com.pandakind.prompteditor.view.SectionEditorDialog
 import com.pandakind.prompteditor.view.TabEditorView
 import javafx.application.Application
 import javafx.collections.FXCollections
@@ -35,7 +34,8 @@ class PromptEditorApp : Application() {
     override fun start(primaryStage: Stage) {
         val projectController = ProjectController()
         val promptFileController = PromptFileController()
-        val systemTemplatesController = SystemTemplatesController()
+        val projectTemplateController = com.pandakind.prompteditor.controller.ProjectTemplateController()
+        val systemTemplateController = SystemTemplateController()
         val promptAssembler = PromptAssembler()
         val spellChecker = SpellCheckerService()
 
@@ -43,7 +43,8 @@ class PromptEditorApp : Application() {
             primaryStage,
             projectController,
             promptFileController,
-            systemTemplatesController,
+            projectTemplateController,
+            systemTemplateController,
             promptAssembler,
             spellChecker
         ).show()

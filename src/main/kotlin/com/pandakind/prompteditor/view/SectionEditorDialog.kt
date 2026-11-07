@@ -1,10 +1,8 @@
 package com.pandakind.prompteditor.view
 
 import com.pandakind.prompteditor.model.Section
-import com.pandakind.prompteditor.model.SectionManager
 import javafx.collections.FXCollections
 import javafx.geometry.Insets
-import javafx.scene.Scene
 import javafx.scene.control.*
 import javafx.scene.layout.GridPane
 import javafx.scene.layout.HBox
@@ -15,9 +13,10 @@ import javafx.stage.Stage
 
 class SectionEditorDialog(
     owner: Stage,
-    private val sectionManager: SectionManager
-) {
-    private val stage = Stage()
+    initialSections: List<Section>
+) : Dialog<List<Section>>() {
+
+    private val sections: MutableList<Section> = initialSections.toMutableList()
     private val sectionList = ListView<String>()
     private val keyField = TextField()
     private val titleField = TextField()
@@ -27,15 +26,17 @@ class SectionEditorDialog(
     private val orderField = TextField()
 
     private var selectedKey: String? = null
-    private var _hasChanges = false
-    val hasChanges: Boolean get() = _hasChanges
 
     init {
-        stage.initOwner(owner)
-        stage.initModality(Modality.APPLICATION_MODAL)
-        stage.title = "Редактор разделов"
+        initOwner(owner)
+        initModality(Modality.APPLICATION_MODAL)
+        title = "Редактор разделов"
         buildUI()
         reloadList()
+        dialogPane.buttonTypes.setAll(ButtonType.OK, ButtonType.CANCEL)
+        setResultConverter { bt ->
+            if (bt == ButtonType.OK) sections.toList() else null
+        }
     }
 
     private fun buildUI() {
@@ -77,21 +78,24 @@ class SectionEditorDialog(
                 Button("Удалить").apply { setOnAction { deleteSelected() } },
                 Button("↑ Вверх").apply { setOnAction { moveUp() } },
                 Button("↓ Вниз").apply { setOnAction { moveDown() } },
-                Button("Сохранить").apply { setOnAction { save() } },
-                Button("Закрыть").apply { setOnAction { stage.close() } }
+                Button("Применить").apply { setOnAction { saveCurrent() } }
             )
         }
 
         val right = VBox(form, buttons).apply { padding = Insets(5.0) }
         val split = SplitPane(left, right).apply { setDividerPositions(0.3) }
-        stage.scene = Scene(split, 760.0, 520.0)
+
+        val content = VBox(split).apply { VBox.setVgrow(split, Priority.ALWAYS) }
+        dialogPane.content = content
+        dialogPane.prefWidth = 760.0
+        dialogPane.prefHeight = 520.0
 
         sectionList.selectionModel.selectedItemProperty().addListener { _, _, title ->
             if (title == null) {
                 selectedKey = null
                 clearForm()
             } else {
-                sectionManager.getSectionByTitle(title)?.let { s ->
+                sections.find { it.title == title }?.let { s ->
                     selectedKey = s.key
                     fillForm(s)
                 }
@@ -100,7 +104,7 @@ class SectionEditorDialog(
     }
 
     private fun reloadList() {
-        val titles = sectionManager.getAllSections().map { it.title }
+        val titles = sections.sortedBy { it.order }.map { it.title }
         sectionList.items = FXCollections.observableArrayList(titles)
     }
 
@@ -129,7 +133,7 @@ class SectionEditorDialog(
         keyField.requestFocus()
     }
 
-    private fun save() {
+    private fun saveCurrent() {
         val key = keyField.text.trim()
         val title = titleField.text.trim()
         if (key.isEmpty() || title.isEmpty()) {
@@ -145,7 +149,7 @@ class SectionEditorDialog(
             alert(Alert.AlertType.ERROR, "Порядок должен быть числом")
             return
         }
-        val enabled = sectionManager.getSectionByKey(key)?.enabled ?: true
+        val enabled = sections.find { it.key == key }?.enabled ?: true
         val newSection = Section(
             key = key,
             title = title,
@@ -157,42 +161,42 @@ class SectionEditorDialog(
         )
 
         if (selectedKey == null) {
-            if (sectionManager.getSectionByKey(key) != null) {
+            if (sections.any { it.key == key }) {
                 alert(Alert.AlertType.ERROR, "Раздел с ключом '$key' уже существует")
                 return
             }
-            sectionManager.addSection(newSection)
+            sections.add(newSection)
         } else {
-            val existing = sectionManager.getSectionByKey(selectedKey!!)
-                ?: run { alert(Alert.AlertType.ERROR, "Раздел не найден"); return }
-            if (existing.key != key && sectionManager.getSectionByKey(key) != null) {
+            val idx = sections.indexOfFirst { it.key == selectedKey }
+            if (idx < 0) {
+                alert(Alert.AlertType.ERROR, "Раздел не найден")
+                return
+            }
+            if (existingKeyChangedAndConflicts(selectedKey!!, key)) {
                 alert(Alert.AlertType.ERROR, "Раздел с ключом '$key' уже существует")
                 return
             }
-            // удалить старую запись, если ключ изменился, и вставить новую
-            if (existing.key != key) {
-                sectionManager.removeSection(existing.key)
-                sectionManager.addSection(newSection)
-            } else {
-                sectionManager.updateSection(newSection)
-            }
+            sections[idx] = newSection
         }
-        _hasChanges = true
         selectedKey = key
         reloadList()
         sectionList.selectionModel.select(title)
     }
 
+    private fun existingKeyChangedAndConflicts(oldKey: String, newKey: String): Boolean {
+        if (oldKey == newKey) return false
+        return sections.any { it.key == newKey }
+    }
+
     private fun deleteSelected() {
         val key = selectedKey ?: return
-        val section = sectionManager.getSectionByKey(key) ?: return
+        val section = sections.find { it.key == key } ?: return
         val ok = Alert(Alert.AlertType.CONFIRMATION).apply {
             title = "Удаление"
             headerText = "Удалить раздел '${section.title}'?"
         }.showAndWait().orElse(ButtonType.CANCEL)
         if (ok == ButtonType.OK) {
-            sectionManager.removeSection(key)
-            _hasChanges = true
+            sections.removeAll { it.key == key }
             selectedKey = null
             reloadList()
             clearForm()
@@ -201,27 +205,33 @@ class SectionEditorDialog(
 
     private fun moveUp() {
         val key = selectedKey ?: return
-        try {
-            sectionManager.moveSectionUp(key)
-            _hasChanges = true
-            reloadList()
-            sectionManager.getSectionByKey(key)?.let { sectionList.selectionModel.select(it.title) }
-        } catch (_: IllegalArgumentException) { /* уже сверху */ }
+        val sorted = sections.sortedBy { it.order }.toMutableList()
+        val idx = sorted.indexOfFirst { it.key == key }
+        if (idx <= 0) return
+        val tmp = sorted[idx].order
+        sorted[idx] = sorted[idx].copy(order = sorted[idx - 1].order)
+        sorted[idx - 1] = sorted[idx - 1].copy(order = tmp)
+        sections.clear()
+        sections.addAll(sorted)
+        reloadList()
+        sections.find { it.key == key }?.let { sectionList.selectionModel.select(it.title) }
     }
 
     private fun moveDown() {
         val key = selectedKey ?: return
-        try {
-            sectionManager.moveSectionDown(key)
-            _hasChanges = true
-            reloadList()
-            sectionManager.getSectionByKey(key)?.let { sectionList.selectionModel.select(it.title) }
-        } catch (_: IllegalArgumentException) { /* уже снизу */ }
+        val sorted = sections.sortedBy { it.order }.toMutableList()
+        val idx = sorted.indexOfFirst { it.key == key }
+        if (idx < 0 || idx >= sorted.size - 1) return
+        val tmp = sorted[idx].order
+        sorted[idx] = sorted[idx].copy(order = sorted[idx + 1].order)
+        sorted[idx + 1] = sorted[idx + 1].copy(order = tmp)
+        sections.clear()
+        sections.addAll(sorted)
+        reloadList()
+        sections.find { it.key == key }?.let { sectionList.selectionModel.select(it.title) }
     }
 
     private fun alert(type: Alert.AlertType, message: String) {
         Alert(type, message).showAndWait()
     }
-
-    fun showAndWait() = stage.showAndWait()
 }

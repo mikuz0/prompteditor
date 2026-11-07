@@ -3,11 +3,11 @@ package com.pandakind.prompteditor.view
 import com.pandakind.prompteditor.controller.ProjectController
 import com.pandakind.prompteditor.controller.PromptAssembler
 import com.pandakind.prompteditor.controller.PromptFileController
+import com.pandakind.prompteditor.controller.ProjectTemplateController
 import com.pandakind.prompteditor.controller.SpellCheckerService
-import com.pandakind.prompteditor.controller.SystemTemplatesController
+import com.pandakind.prompteditor.controller.SystemTemplateController
 import com.pandakind.prompteditor.model.*
 import com.pandakind.prompteditor.util.AppPaths
-import com.pandakind.prompteditor.model.SectionManager
 import javafx.collections.FXCollections
 import javafx.geometry.Insets
 import javafx.geometry.Orientation
@@ -21,6 +21,7 @@ import javafx.stage.DirectoryChooser
 import javafx.stage.FileChooser
 import javafx.stage.Stage
 import java.nio.file.Files
+import java.nio.file.Path
 import java.nio.file.Paths
 import java.util.LinkedHashMap
 
@@ -28,7 +29,8 @@ class MainWindow(
     private val primaryStage: Stage,
     private val projectController: ProjectController,
     private val promptFileController: PromptFileController,
-    private val systemTemplatesController: SystemTemplatesController,
+    private val projectTemplateController: ProjectTemplateController,
+    private val systemTemplateController: SystemTemplateController,
     private val promptAssembler: PromptAssembler,
     private val spellChecker: SpellCheckerService
 ) {
@@ -37,12 +39,14 @@ class MainWindow(
     private var currentPromptName: String? = null
     private var projectDir: java.nio.file.Path? = null
     private var isDirty: Boolean = false
-    private var sectionManager: SectionManager? = null
+
+    // Active template
+    private var activeTemplate: Template? = null
+    private var activeTemplateName: String? = null
 
     // Per-project data
     private val tabEditors = mutableMapOf<String, TabEditorView>()
     private val sectionTexts = mutableMapOf<String, String>()
-    private val templatesData = mutableMapOf<String, List<String>>()
 
     // UI components
     private val projectLabel = Label("Проект не открыт")
@@ -123,10 +127,12 @@ class MainWindow(
         // Template menu
         templateMenu = Menu("Шаблон").apply {
             items.addAll(
-                item("Открыть системный...") { openSystemTemplates() },
+                item("Открыть из проекта...") { openProjectTemplate() },
+                item("Открыть системный...") { openSystemTemplate() },
                 SeparatorMenuItem(),
-                item("Сохранить") { saveTemplates() },
-                item("Сохранить как системный") { saveAsSystemTemplates() }
+                item("Сохранить") { saveActiveTemplate() },
+                item("Сохранить как...") { saveActiveTemplateAs() },
+                item("Сохранить как системный...") { saveActiveTemplateAsSystem() }
             )
         }
 
@@ -329,31 +335,30 @@ class MainWindow(
         isDirty = false
         updateMenuDisables()
 
-        // Load sections.json
-        val sectionsFile = dir.resolve("sections.json")
-        if (!Files.exists(sectionsFile)) {
-            val choice = Alert(Alert.AlertType.CONFIRMATION).apply {
-                title = "Конфиг не найден"
-                headerText = "Конфиг разделов не найден"
-                contentText = "Восстановить из стандартного?"
-                buttonTypes.setAll(ButtonType.OK, ButtonType.CANCEL)
-            }.showAndWait().orElse(ButtonType.CANCEL)
-            if (choice == ButtonType.OK) {
+        // Load active template
+        val templateName = actualProject.activeTemplate ?: "default"
+        var template = projectTemplateController.load(dir, templateName)
+        if (template == null) {
+            if (templateName == "default") {
                 val defaultSections = loadDefaultSections()
-                val objectMapper = com.fasterxml.jackson.databind.ObjectMapper().apply {
-                    registerModule(com.fasterxml.jackson.module.kotlin.kotlinModule())
+                template = Template(name = "default", sections = defaultSections)
+                projectTemplateController.save(dir, template)
+                if (actualProject.activeTemplate != "default") {
+                    val updated = actualProject.copy(activeTemplate = "default")
+                    projectController.save(updated, dir)
+                    currentProject = updated
                 }
-                objectMapper.writerWithDefaultPrettyPrinter()
-                    .writeValue(sectionsFile.toFile(), defaultSections)
             } else {
-                Files.writeString(sectionsFile, "[]")
+                Alert(Alert.AlertType.WARNING,
+                    "Шаблон '$templateName' не найден. Используем default.").show()
+                val defaultSections = loadDefaultSections()
+                template = Template(name = "default", sections = defaultSections)
+                projectTemplateController.save(dir, template)
+                activeTemplateName = "default"
             }
         }
-        sectionManager = SectionManager(sectionsFile)
-
-        // Load templates from project
-        templatesData.clear()
-        actualProject.templates.forEach { (k, v) -> templatesData[k] = v }
+        activeTemplate = template
+        activeTemplateName = template.name
 
         // Update UI
         projectLabel.text = "Проект: ${actualProject.name}"
@@ -407,14 +412,14 @@ class MainWindow(
     private fun resetUI() {
         tabEditors.clear()
         sectionTexts.clear()
-        templatesData.clear()
         tabPane.tabs.clear()
         assemblyViewer.clear()
         currentProject = null
         currentPromptName = null
         projectDir = null
         isDirty = false
-        sectionManager = null
+        activeTemplate = null
+        activeTemplateName = null
     }
 
     /** Create a new prompt in the current project. */
@@ -511,12 +516,9 @@ class MainWindow(
         val prompt = Prompt(name = currentPromptName!!, data = data)
         promptFileController.save(projectDir!!, prompt)
 
-        // Update project.lastPrompt and templates
+        // Update project.lastPrompt
         val project = currentProject!!
-        val updatedProject = project.copy(
-            lastPrompt = currentPromptName,
-            templates = LinkedHashMap(templatesData)
-        )
+        val updatedProject = project.copy(lastPrompt = currentPromptName)
         projectController.save(updatedProject, projectDir!!)
         currentProject = updatedProject
 
@@ -574,79 +576,135 @@ class MainWindow(
         javafx.scene.input.Clipboard.getSystemClipboard().setContent(content)
     }
 
-    // ─── Templates ───────────────────────────────────────────────────
+    // ─── Template menu actions ───────────────────────────────────────
 
-    /** Load system templates and replace current project templates. */
-    private fun openSystemTemplates() {
-        val sysTemplates = systemTemplatesController.load()
-        if (sysTemplates == null || sysTemplates.isEmpty()) {
-            Alert(Alert.AlertType.INFORMATION, "Системные шаблоны пусты").show()
+    private fun openProjectTemplate() {
+        val dir = projectDir ?: return
+        val names = projectTemplateController.list(dir)
+        if (names.isEmpty()) {
+            Alert(Alert.AlertType.INFORMATION, "Нет шаблонов в проекте").show()
             return
         }
-        val confirm = if (templatesData.isNotEmpty()) {
-            val alert = Alert(Alert.AlertType.CONFIRMATION).apply {
-                title = "Заменить шаблоны?"
-                headerText = null
-                contentText = "Текущие шаблоны будут заменены системными."
-            }
-            alert.showAndWait().orElse(ButtonType.CANCEL) == ButtonType.OK
-        } else {
-            true
+        val dialog = ChoiceDialog(activeTemplateName ?: names.first(), names).apply {
+            title = "Открыть шаблон из проект��"
+            headerText = "Выберите шаблон"
+            contentText = "Шаблон:"
         }
-        if (!confirm) return
-        templatesData.clear()
-        templatesData.putAll(sysTemplates)
-        refreshTemplatesInTabs()
+        dialog.showAndWait().ifPresent { name ->
+            applyTemplateFromProject(dir, name)
+        }
+    }
+
+    private fun applyTemplateFromProject(dir: Path, name: String) {
+        val loaded = projectTemplateController.load(dir, name) ?: return
+        tabEditors.forEach { (key, editor) -> sectionTexts[key] = editor.text }
+        activeTemplate = loaded
+        activeTemplateName = loaded.name
+        currentProject?.let { p ->
+            val updated = p.copy(activeTemplate = loaded.name)
+            projectController.save(updated, dir)
+            currentProject = updated
+        }
+        refreshSections()
         isDirty = true
         updateWindowTitle()
     }
 
-    /** Save current project templates to project.json. */
-    private fun saveTemplates() {
-        if (currentProject == null || projectDir == null) return
-        val updatedProject = currentProject!!.copy(templates = LinkedHashMap(templatesData))
-        projectController.save(updatedProject, projectDir!!)
-        currentProject = updatedProject
-        Alert(Alert.AlertType.INFORMATION, "Шаблоны сохранены").show()
-    }
-
-    /** Save current templates as system templates. */
-    private fun saveAsSystemTemplates() {
-        if (templatesData.isEmpty()) {
-            Alert(Alert.AlertType.WARNING, "Нет шаблонов для сохранения").show()
+    private fun openSystemTemplate() {
+        val names = systemTemplateController.list()
+        if (names.isEmpty()) {
+            Alert(Alert.AlertType.INFORMATION, "Системных шаблонов нет").show()
             return
         }
-        val alert = Alert(Alert.AlertType.CONFIRMATION).apply {
-            title = "Сохранить как системный"
-            headerText = null
-            contentText = "Системные шаблоны будут перезаписаны. Продолжить?"
+        val dialog = ChoiceDialog(names.first(), names).apply {
+            title = "Открыть системный шаблон"
+            headerText = "Выберите шаблон"
+            contentText = "Шаблон:"
         }
-        alert.showAndWait().ifPresent { btn ->
-            if (btn == ButtonType.OK) {
-                systemTemplatesController.save(templatesData)
-                Alert(Alert.AlertType.INFORMATION, "Системные шаблоны сохранены").show()
+        dialog.showAndWait().ifPresent { name ->
+            val loaded = systemTemplateController.load(name) ?: return@ifPresent
+            tabEditors.forEach { (key, editor) -> sectionTexts[key] = editor.text }
+            activeTemplate = loaded
+            activeTemplateName = loaded.name
+            currentProject?.let { p ->
+                projectDir?.let { dir ->
+                    val updated = p.copy(activeTemplate = loaded.name)
+                    projectController.save(updated, dir)
+                    currentProject = updated
+                }
             }
+            refreshSections()
+            isDirty = true
+            updateWindowTitle()
+        }
+    }
+
+    private fun saveActiveTemplate() {
+        val dir = projectDir ?: return
+        val t = activeTemplate ?: return
+        projectTemplateController.save(dir, t)
+        Alert(Alert.AlertType.INFORMATION, "Шаблон сохранён").show()
+    }
+
+    private fun saveActiveTemplateAs() {
+        val dir = projectDir ?: return
+        val t = activeTemplate ?: return
+        val dialog = TextInputDialog(t.name).apply {
+            title = "Сохранить шаблон как"
+            headerText = "Имя нового шаблона"
+            contentText = "Имя:"
+        }
+        dialog.showAndWait().ifPresent { raw ->
+            val name = raw.trim()
+            if (name.isBlank()) return@ifPresent
+            if (!name.matches(Regex("^[a-zA-Z0-9_\\-]+$"))) {
+                Alert(Alert.AlertType.ERROR, "Имя: только буквы, цифры, _ -").show()
+                return@ifPresent
+            }
+            val copy = t.copy(name = name)
+            projectTemplateController.save(dir, copy)
+            activeTemplate = copy
+            activeTemplateName = name
+            currentProject?.let { p ->
+                val updated = p.copy(activeTemplate = name)
+                projectController.save(updated, dir)
+                currentProject = updated
+            }
+        }
+    }
+
+    private fun saveActiveTemplateAsSystem() {
+        val t = activeTemplate ?: return
+        val dialog = TextInputDialog(t.name).apply {
+            title = "Сохранить как системный"
+            headerText = "Имя системного шаблона"
+            contentText = "Имя:"
+        }
+        dialog.showAndWait().ifPresent { raw ->
+            val name = raw.trim()
+            if (name.isBlank()) return@ifPresent
+            if (!name.matches(Regex("^[a-zA-Z0-9_\\-]+$"))) {
+                Alert(Alert.AlertType.ERROR, "Имя: только буквы, цифры, _ -").show()
+                return@ifPresent
+            }
+            val copy = t.copy(name = name)
+            systemTemplateController.save(copy)
+            Alert(Alert.AlertType.INFORMATION, "Системный шаблон сохранён").show()
         }
     }
 
     // ─── Section Editor ──────────────────────────────────────────────
 
     private fun openSectionEditor() {
-        if (sectionManager == null) return
-        val dialog = SectionEditorDialog(primaryStage, sectionManager!!)
-        dialog.showAndWait()
-        if (dialog.hasChanges) {
-            // Save current texts before rebuilding
+        val t = activeTemplate ?: return
+        val dialog = SectionEditorDialog(primaryStage, t.sections)
+        val result = dialog.showAndWait()
+        if (result.isPresent) {
+            val newSections = result.get()
             tabEditors.forEach { (key, editor) -> sectionTexts[key] = editor.text }
+            activeTemplate = t.copy(sections = newSections)
             refreshSections()
-            // Restore texts after rebuild
-            sectionTexts.forEach { (key, text) ->
-                tabEditors[key]?.text = text
-            }
-            // Restore templates
-            templatesData.forEach { (key, list) ->
-                tabEditors[key]?.setTemplates(list)
-            }
+            sectionTexts.forEach { (key, text) -> tabEditors[key]?.text = text }
             isDirty = true
             updateWindowTitle()
         }
@@ -670,23 +728,18 @@ class MainWindow(
     // ─── UI Helpers ──────────────────────────────────────────────────
 
     /**
-     * Build display sections by combining:
-     * 1. Config sections (from sections.json) sorted by order
-     * 2. Implicit sections (from templates/prompts) not in config
+     * Build display sections from activeTemplate.sections.
      */
     private fun buildDisplaySections(): List<DisplaySection> {
-        val configSections = sectionManager?.getAllSections() ?: emptyList()
+        val configSections = activeTemplate?.sections ?: emptyList()
         val configKeys = configSections.map { it.key }.toSet()
 
-        // All keys from config + templates + prompt data
         val allKeys = configSections.map { it.key }.toMutableSet()
-        allKeys.addAll(templatesData.keys)
+        activeTemplate?.templates?.keys?.let { allKeys.addAll(it) }
         allKeys.addAll(sectionTexts.keys)
 
-        // Config sections first, sorted by order
         val display = configSections.map { DisplaySection.fromSection(it) }.toMutableList()
 
-        // Implicit sections (not in config)
         val implicitKeys = allKeys - configKeys
         var idx = 0
         for (key in implicitKeys) {
@@ -703,18 +756,17 @@ class MainWindow(
         return display
     }
 
-    /** Get all section keys: from config + templates + prompt data. */
+    /** Get all section keys from active template + prompt data. */
     private fun getAllSectionKeys(): Set<String> {
-        val configKeys = sectionManager?.getAllSections()?.map { it.key }?.toSet() ?: emptySet()
+        val configKeys = activeTemplate?.sections?.map { it.key }?.toSet() ?: emptySet()
         val allKeys = configKeys.toMutableSet()
-        allKeys.addAll(templatesData.keys)
+        activeTemplate?.templates?.keys?.let { allKeys.addAll(it) }
         allKeys.addAll(sectionTexts.keys)
         return allKeys
     }
 
-    /** Refresh tab editors based on current sections, preserving existing data. */
+    /** Refresh tab editors based on active template sections. */
     private fun refreshSections() {
-        // Save current texts
         tabEditors.forEach { (key, editor) -> sectionTexts[key] = editor.text }
 
         tabPane.tabs.clear()
@@ -732,6 +784,11 @@ class MainWindow(
             if (sectionTexts[section.key] == null) {
                 sectionTexts[section.key] = section.defaultText
             }
+
+            // Apply templates from active template
+            val formulations = activeTemplate?.templates?.get(section.key) ?: emptyList()
+            editor.setTemplates(formulations)
+
             // Subscribe to text changes
             editor.textProperty.addListener { _, _, newVal ->
                 sectionTexts[section.key] = newVal ?: ""
@@ -763,18 +820,8 @@ class MainWindow(
                 sectionTexts[key] = text
                 tabEditors[key]?.text = text
             }
-            templatesData.forEach { (key, list) ->
-                tabEditors[key]?.setTemplates(list)
-            }
         } finally {
             isApplyingData = false
-        }
-    }
-
-    /** Update templates in all tabs from current templatesData. */
-    private fun refreshTemplatesInTabs() {
-        templatesData.forEach { (key, list) ->
-            tabEditors[key]?.setTemplates(list)
         }
     }
 

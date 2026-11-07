@@ -18,32 +18,33 @@ class ProjectControllerTest {
     private fun createDefaultSections(): List<Section> {
         return listOf(
             Section("role", "Role", "ROLE", "Role desc", "", 0, true),
-            Section("goal", "Goal", "GOAL", "Goal desc", "", 1, true)
+                      Section("goal", "Goal", "GOAL", "Goal desc", "", 1, true)
         )
     }
 
     @Test
-    fun `create should create project json sections json and prompts directory`() {
+    fun `create should create project json templates default json and prompts directory`() {
         val projectDir = tempDir.resolve("MyProject")
         val controller = ProjectController()
         val project = controller.create(projectDir, createDefaultSections())
 
         assertEquals("MyProject", project.name)
         assertNull(project.lastPrompt)
+        assertEquals("default", project.activeTemplate)
         assertTrue(Files.exists(projectDir.resolve("project.json")))
-        assertTrue(Files.exists(projectDir.resolve("sections.json")))
+        assertTrue(Files.exists(projectDir.resolve("templates/default.json")))
         assertTrue(Files.isDirectory(projectDir.resolve("prompts")))
     }
 
     @Test
-    fun `create should copy default sections to sections json`() {
+    fun `create should save default template with sections`() {
         val projectDir = tempDir.resolve("test_project")
         val controller = ProjectController()
         controller.create(projectDir, createDefaultSections())
 
-        val sectionsFile = projectDir.resolve("sections.json")
-        assertTrue(Files.exists(sectionsFile))
-        val content = Files.readString(sectionsFile)
+        val templateFile = projectDir.resolve("templates/default.json")
+        assertTrue(Files.exists(templateFile))
+        val content = Files.readString(templateFile)
         assertTrue(content.contains("role"))
         assertTrue(content.contains("goal"))
     }
@@ -76,11 +77,11 @@ class ProjectControllerTest {
         val controller = ProjectController()
         val project = controller.create(projectDir, createDefaultSections())
 
-        val updated = project.copy(lastPrompt = "prompt1.json")
+        val updated = project.copy(lastPrompt = "prompt1")
         controller.save(updated, projectDir)
 
         val loaded = controller.open(projectDir)
-        assertEquals("prompt1.json", loaded?.lastPrompt)
+        assertEquals("prompt1", loaded?.lastPrompt)
     }
 
     @Test
@@ -98,7 +99,6 @@ class ProjectControllerTest {
 
     @Test
     fun `lastProjectPath should return null when not set`() {
-        // Clean up any existing last project file
         Files.deleteIfExists(com.pandakind.prompteditor.util.AppPaths.lastProjectPath)
         val controller = ProjectController()
         assertNull(controller.getLastProjectPath())

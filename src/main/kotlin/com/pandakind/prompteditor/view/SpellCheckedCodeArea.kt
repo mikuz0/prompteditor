@@ -3,10 +3,9 @@ package com.pandakind.prompteditor.view
 import com.pandakind.prompteditor.controller.SpellCheckerService
 import javafx.animation.PauseTransition
 import javafx.beans.value.ObservableValue
-import javafx.geometry.Insets
 import javafx.scene.control.ContextMenu
 import javafx.scene.control.MenuItem
-import javafx.scene.layout.VBox
+import javafx.scene.layout.StackPane
 import javafx.util.Duration
 import org.fxmisc.richtext.StyleClassedTextArea
 import org.fxmisc.richtext.model.StyleSpans
@@ -16,7 +15,7 @@ import java.util.Collections
 class SpellCheckedCodeArea(
     private val spellChecker: SpellCheckerService,
     private val sectionTitle: String
-) : VBox() {
+) : StackPane() {
 
     private val delegate = StyleClassedTextArea().apply {
         isWrapText = true
@@ -31,7 +30,6 @@ class SpellCheckedCodeArea(
 
     init {
         children.add(delegate)
-        padding = Insets(0.0)
 
         delegate.setOnContextMenuRequested { e ->
             buildContextMenu()
@@ -53,10 +51,16 @@ class SpellCheckedCodeArea(
     fun setStyleSpans(pos: Int, spans: StyleSpans<*>): Unit = delegate.setStyleSpans(pos, spans as StyleSpans<Collection<String>>)
     val length: Int get() = delegate.length
 
+    private fun isWordChar(c: Char): Boolean =
+        c.isLetterOrDigit() || c == '\'' || c == '-'
+
     fun checkSpelling() {
         val content = text
         if (content.isBlank()) {
-            setStyleClass(0, length, "")
+            val empty = StyleSpansBuilder<Collection<String>>()
+                .add(emptyList(), maxOf(content.length, 0))
+                .create()
+            if (content.isNotEmpty()) setStyleSpans(0, empty)
             return
         }
         val errors = spellChecker.checkText(content)
@@ -103,8 +107,8 @@ class SpellCheckedCodeArea(
         if (!text[pos].isLetter()) return null
         var start = pos
         var end = pos + 1
-        while (start > 0 && text[start - 1].isLetter()) start--
-        while (end < text.length && text[end].isLetter()) end++
+        while (start > 0 && isWordChar(text[start - 1])) start--
+        while (end < text.length && isWordChar(text[end])) end++
         return text.substring(start, end)
     }
 
@@ -116,18 +120,15 @@ class SpellCheckedCodeArea(
         if (pos < 0) return
         var start = pos
         var end = pos + 1
-        while (start > 0 && text[start - 1].isLetter()) start--
-        while (end < text.length && text[end].isLetter()) end++
+        while (start > 0 && isWordChar(text[start - 1])) start--
+        while (end < text.length && isWordChar(text[end])) end++
         replaceText(start, end, replacement)
     }
 
     private fun applyHighlight(errors: Map<Int, List<String>>) {
-        if (length == 0) return
-        if (errors.isEmpty()) {
-            setStyleClass(0, length, "")
-            return
-        }
-        val spans: StyleSpans<Collection<String>> = buildSpans(text, errors.keys)
+        val content = text
+        if (content.isEmpty()) return
+        val spans = buildSpans(content, errors.keys)
         setStyleSpans(0, spans)
     }
 
@@ -138,7 +139,7 @@ class SpellCheckedCodeArea(
         for (start in starts) {
             if (start < 0 || start >= content.length) continue
             var end = start
-            while (end < content.length && content[end].isLetter()) end++
+            while (end < content.length && isWordChar(content[end])) end++
             if (end <= start) continue
             if (start > last) {
                 builder.add(Collections.emptyList(), start - last)

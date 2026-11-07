@@ -20,10 +20,8 @@ object AppPaths {
         configDir.resolve("sections_config.json")
     }
 
-    /** System-level templates, overwritten via "Save as system template". */
-    val systemTemplatesPath: Path by lazy {
-        configDir.resolve("system_templates.json")
-    }
+    /** System-level templates directory (each file is a named Template). */
+    val systemTemplatesDir: Path = configDir.resolve("system_templates")
 
     /** Path to the last opened project directory (absolute path string). */
     val lastProjectPath: Path by lazy {
@@ -84,5 +82,6 @@ object AppPaths {
         // configDir and workspacePath are already initialized eagerly
         Files.createDirectories(configDir)
         Files.createDirectories(userDictPath.parent)
+        Files.createDirectories(systemTemplatesDir)
     }
 }

@@ -1,62 +1,84 @@
 package com.pandakind.prompteditor.controller
 
-import com.pandakind.prompteditor.model.Section
+import com.pandakind.prompteditor.util.AppPaths
 import org.junit.jupiter.api.Test
-import kotlin.test.assertEquals
+import kotlin.test.assertFalse
+import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
-import org.junit.jupiter.api.Assertions
 
 class SpellCheckerServiceTest {
 
-    private val service = SpellCheckerService()
-
     @Test
-    fun `should check word correctly`() {
-        // "дом" is a valid Russian word
-        val result = service.checkWord("дом")
-        assertTrue(result)
+    fun `russian word dom is valid`() {
+        val s = SpellCheckerService()
+        s.setLanguage("ru")
+        assertTrue(s.checkWord("дом"))
     }
 
     @Test
-    fun `should detect misspelled word`() {
-        // "хтото" is not a standard Russian word
-        val result = service.checkWord("хтото")
-        // May or may not be detected depending on dictionary
-        // Just check it doesn't throw
-        Assertions.assertNotNull(result)
+    fun `misspelled russian word is invalid`() {
+        val s = SpellCheckerService()
+        s.setLanguage("ru")
+        assertFalse(s.checkWord("хтото"))
     }
 
     @Test
-    fun `should get suggestions for misspelled word`() {
-        val suggestions = service.getSuggestions("привет")
-        // Should return a list (may be empty if word is correct)
-        Assertions.assertNotNull(suggestions)
+    fun `english word is valid after switching language`() {
+        val s = SpellCheckerService()
+        s.setLanguage("en")
+        assertTrue(s.checkWord("hello"))
     }
 
     @Test
-    fun `should check text and return misspellings`() {
-        val text = "Привет мир"
-        val misspellings = service.checkText(text)
-        Assertions.assertNotNull(misspellings)
+    fun `getSuggestions for misspelled word returns non-empty list`() {
+        val s = SpellCheckerService()
+        s.setLanguage("ru")
+        val suggestions = s.getSuggestions("хтото")
+        assertTrue(suggestions.isNotEmpty())
     }
 
     @Test
-    fun `should set language`() {
-        service.setLanguage("en")
-        assertEquals("en", service.getLanguage())
+    fun `checkText finds misspelled words by start index`() {
+        val s = SpellCheckerService()
+        s.setLanguage("ru")
+        val text = "дом превет малоко"
+        val result = s.checkText(text)
+        // превет начинается с индекса 4, малоко с индекса 11
+        assertTrue(result.containsKey(4), "expected 'превет' at 4, got $result")
+        assertTrue(result.containsKey(11), "expected 'малоко' at 11, got $result")
+        // дом — правильное, его нет
+        assertFalse(result.containsKey(0), "expected no error at 0, got $result")
     }
 
     @Test
-    fun `should add word to dictionary`() {
-        val testWord = "testword123"
-        service.addWord(testWord)
-        // Should not throw
-        Assertions.assertNotNull(service.checkWord(testWord))
+    fun `checkText returns suggestions for misspellings`() {
+        val s = SpellCheckerService()
+        s.setLanguage("ru")
+        val result = s.checkText("малоко")
+        assertTrue(result.isNotEmpty())
+        val suggestions = result[0]
+        assertNotNull(suggestions)
+        assertTrue(suggestions.any { it == "молоко" }, "expected 'молоко', got $suggestions")
     }
 
     @Test
-    fun `should handle empty text`() {
-        val misspellings = service.checkText("")
-        assertTrue(misspellings.isEmpty())
+    fun `addWord makes word valid`() {
+        val s = SpellCheckerService()
+        s.setLanguage("ru")
+        val invented = "квазипуперслово"
+        // до addWord — невалидное
+        assertFalse(s.checkWord(invented))
+        // после — валидное
+        s.addWord(invented)
+        assertTrue(s.checkWord(invented))
+        // очистить за собой
+        try { java.nio.file.Files.deleteIfExists(AppPaths.userDictPath) } catch (_: Exception) {}
+    }
+
+    @Test
+    fun `checkText on empty string returns empty map`() {
+        val s = SpellCheckerService()
+        assertTrue(s.checkText("").isEmpty())
+        assertTrue(s.checkText("   ").isEmpty())
     }
 }

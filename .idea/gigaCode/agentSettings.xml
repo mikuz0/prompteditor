@@ -28,6 +28,39 @@
         <Execute>
           <option name="pattern" value="timeout 5 ./gradlew *" />
         </Execute>
+        <Execute>
+          <option name="pattern" value="head *" />
+        </Execute>
+        <Execute>
+          <option name="pattern" value="cat *" />
+        </Execute>
+        <Execute>
+          <option name="pattern" value="nl" />
+        </Execute>
+        <Execute>
+          <option name="pattern" value="unzip -l ~/.gradle/caches/modules-2/files-2.1/io.github.geniot/jortho/1.1/90a5702c3464e879f2d20188fc27d2e773cc5e00/jortho-1.1.jar" />
+        </Execute>
+        <Execute>
+          <option name="pattern" value="javap -classpath . io.github.geniot.jortho.Speller 2&gt;&amp;1" />
+        </Execute>
+        <Execute>
+          <option name="pattern" value="ls *" />
+        </Execute>
+        <Execute>
+          <option name="pattern" value="javap -classpath . io.github.geniot.jortho.SpellChecker 2&gt;&amp;1" />
+        </Execute>
+        <Execute>
+          <option name="pattern" value="jar tf *" />
+        </Execute>
+        <Execute>
+          <option name="pattern" value="jar xf *" />
+        </Execute>
+        <Execute>
+          <option name="pattern" value="javap -p /tmp/io/github/geniot/jortho/Suggestion.class" />
+        </Execute>
+        <Execute>
+          <option name="pattern" value="jpackage --version 2&gt;&amp;1" />
+        </Execute>
       </list>
     </option>
   </component>
