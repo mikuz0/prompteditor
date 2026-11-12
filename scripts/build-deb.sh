@@ -19,6 +19,16 @@ MAIN_CLASS="com.pandakind.prompteditor.PromptEditorAppKt"
 INPUT_DIR="build/install/prompteditor/lib"
 DEST_DIR="build/dist"
 
+# ─── Иконка (опционально) ────────────────────────────────────────
+ICON_PATH="src/main/resources/icon.png"
+ICON_ARG=""
+if [ -f "$ICON_PATH" ]; then
+    ICON_ARG="--icon $ICON_PATH"
+    echo "Using icon: $ICON_PATH ($(stat -c%s "$ICON_PATH") bytes)"
+else
+    echo "WARNING: $ICON_PATH not found — building without custom icon"
+fi
+
 # ─── Step 1: пересобрать jar и installDist, игнорируя кеш ────────
 echo "=== Rebuilding application from source (ignoring cache) ==="
 ./gradlew --no-daemon clean jar installDist --rerun-tasks
@@ -49,6 +59,7 @@ echo "=== Building .deb with jpackage ==="
     --input "$INPUT_DIR" \
     --main-jar "$MAIN_JAR" \
     --main-class "$MAIN_CLASS" \
+    $ICON_ARG \
     --linux-shortcut \
     --linux-package-name "$APP_NAME" \
     --linux-menu-group "Utility" \
@@ -63,12 +74,18 @@ echo "=== Injecting postinst/postrm into $DEB_FILE ==="
 TMP_DIR=$(mktemp -d)
 dpkg-deb -R "$DEB_FILE" "$TMP_DIR"
 
-cat > "$TMP_DIR/DEBIAN/postinst" <<'EOF'
+# Ищем .desktop-файл: jpackage может положить его как
+# prompteditor-prompteditor.desktop или prompteditor.desktop
+DESKTOP_SRC=$(find "$TMP_DIR/opt/prompteditor/lib" -maxdepth 1 -name "*.desktop" | head -n 1)
+DESKTOP_NAME=$(basename "$DESKTOP_SRC" 2>/dev/null || echo "prompteditor.desktop")
+echo "Found .desktop: $DESKTOP_NAME"
+
+cat > "$TMP_DIR/DEBIAN/postinst" <<EOF
 #!/bin/sh
 set -e
 ln -sf /opt/prompteditor/bin/prompteditor /usr/bin/prompteditor
-if [ -f /opt/prompteditor/lib/prompteditor-prompteditor.desktop ]; then
-    cp /opt/prompteditor/lib/prompteditor-prompteditor.desktop /usr/share/applications/prompteditor.desktop
+if [ -f "/opt/prompteditor/lib/${DESKTOP_NAME}" ]; then
+    cp "/opt/prompteditor/lib/${DESKTOP_NAME}" /usr/share/applications/prompteditor.desktop
 fi
 if command -v update-desktop-database >/dev/null 2>&1; then
     update-desktop-database /usr/share/applications || true
@@ -99,7 +116,8 @@ rm -rf "$TMP_DIR"
 echo "=== DONE ==="
 ls -la "$DEST_DIR"/*.deb
 echo "Size: $(du -h "$DEST_DIR"/*.deb | cut -f1)"
-echo "Deb contains postinst: $(dpkg-deb -e "$DEB_FILE" /tmp/debchk 2>/dev/null && ls /tmp/debchk/ | grep -q postinst && echo YES || echo NO)"
+dpkg-deb -e "$DEB_FILE" /tmp/debchk 2>/dev/null
+echo "Deb contains postinst: $(ls /tmp/debchk/ 2>/dev/null | grep -q postinst && echo YES || echo NO)"
 echo ""
 echo "To install:"
 echo "  sudo dpkg -r prompteditor  # remove old, if any"
